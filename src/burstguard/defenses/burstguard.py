@@ -11,13 +11,17 @@ aggregate (or group aggregates) is needed, so the screen is compatible with secu
 
 Two references (burstguard.reference = "both", default):
   S_last   vs. the last accepted global  -> sudden injections; flagged when
-           S_last > max(threshold, median(history) + mad_k * MAD(history))
-  S_anchor vs. the pre-trained model     -> slow, accumulated poisoning; flagged when S_anchor > threshold_anchor
-Benign fine-tuning drifts slowly away from the anchor, so threshold_anchor must be larger than threshold
-(calibrate both with experiments/E0_calibration.toml).
+           S_last > max(threshold, median(H_last) + mad_k * MAD(H_last))
+  S_anchor vs. the pre-trained model     -> accumulated poisoning; flagged when
+           S_anchor > max(threshold_anchor, median(H_anchor) + mad_k * MAD(H_anchor))   (anchor_adaptive = true)
+           S_anchor > threshold_anchor                                                 (anchor_adaptive = false)
+H_* = per-round medians of the accepted scores over the last `history` rounds. Benign fine-tuning drifts smoothly
+away from the anchor, so the adaptive anchor threshold follows that drift; a fixed one (anchor_adaptive = false)
+also stops slow ramps but needs calibration for the run length (experiments/E0_calibration.toml, E9_ablation.toml).
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -48,7 +52,10 @@ class BurstGuard:
         self.sig = torch.from_numpy(np.asarray(probe_sigma, dtype=np.float32)[idx].reshape(-1, 1, 1))
         self.anchor = anchor_vec.copy()
         self.last = anchor_vec.copy()
-        self.history: list[float] = []
+        self.history: list[float] = []         # per-round median of accepted S_last
+        self.history_anchor: list[float] = []  # per-round median of accepted S_anchor
+        t = int(self.bg.get("threads", 0) or 0)
+        self.threads = t if t > 0 else max(1, min(4, (os.cpu_count() or 2) - 1))
 
     def score(self, cand_vec: np.ndarray, ref_vec: np.ndarray, seed: int = 0) -> float:
         bg = self.bg
@@ -85,35 +92,81 @@ class BurstGuard:
                     best = max(best, float(dc - dr))
         return best
 
-    def threshold(self) -> float:
-        thr = float(self.bg["threshold"])
-        h = self.history[-int(self.bg["history"]):]
+    def _adaptive(self, floor: float, hist: list[float]) -> float:
+        h = hist[-int(self.bg["history"]):]
         if len(h) >= 3:
             med = float(np.median(h))
             mad = float(np.median(np.abs(np.array(h) - med)))
-            thr = max(thr, med + float(self.bg["mad_k"]) * mad)
-        return thr
+            return max(floor, med + float(self.bg["mad_k"]) * mad)
+        return floor
+
+    def threshold(self) -> float:
+        return self._adaptive(float(self.bg["threshold"]), self.history)
+
+    def threshold_anchor(self) -> float:
+        floor = float(self.bg["threshold_anchor"])
+        return self._adaptive(floor, self.history_anchor) if self.bg.get("anchor_adaptive", True) else floor
 
     def screen(self, theta_g: np.ndarray, unit_deltas: list[np.ndarray], rnd: int) -> tuple[list[bool], dict]:
         """Return (flags per candidate unit, info). Candidates are theta_g + unit delta."""
-        t0 = time.process_time()
+        t0, w0 = time.process_time(), time.time()
         ref = self.bg["reference"]
-        thr, thr_a = self.threshold(), float(self.bg["threshold_anchor"])
+        thr, thr_a = self.threshold(), self.threshold_anchor()
         s_last, s_anchor, would = [], [], []
-        for i, u in enumerate(unit_deltas):
-            cand = theta_g + u
-            sl = self.score(cand, self.last, seed=rnd * 31 + i) if ref in ("last", "both") else None
-            sa = self.score(cand, self.anchor, seed=rnd * 37 + i) if ref in ("anchor", "both") else None
-            s_last.append(sl); s_anchor.append(sa)
-            would.append(bool((sl is not None and sl > thr) or (sa is not None and sa > thr_a)))
+        prev_threads = torch.get_num_threads()
+        torch.set_num_threads(self.threads)
+        try:
+            for i, u in enumerate(unit_deltas):
+                cand = theta_g + u
+                sl = self.score(cand, self.last, seed=rnd * 31 + i) if ref in ("last", "both") else None
+                sa = self.score(cand, self.anchor, seed=rnd * 37 + i) if ref in ("anchor", "both") else None
+                s_last.append(sl); s_anchor.append(sa)
+                would.append(bool((sl is not None and sl > thr) or (sa is not None and sa > thr_a)))
+        finally:
+            torch.set_num_threads(prev_threads)
         flags = would if self.bg["mode"] == "enforce" else [False] * len(would)
         # one comparable score per unit for logging / ROC analysis: largest margin over its threshold
         scores = [max([(x - t) for x, t in ((sl, thr), (sa, thr_a)) if x is not None]) + float(self.bg["threshold"])
                   for sl, sa in zip(s_last, s_anchor)]
         return flags, {"scores": scores, "score_last": s_last, "score_anchor": s_anchor, "threshold": thr,
                        "threshold_anchor": thr_a, "flags": flags, "would_flag": would,
-                       "cpu_s": time.process_time() - t0, "mode": self.bg["mode"], "reference": ref}
+                       "cpu_s": time.process_time() - t0, "wall_s": time.time() - w0, "threads": self.threads,
+                       "mode": self.bg["mode"], "reference": ref}
 
-    def accept(self, theta_new: np.ndarray, accepted_last_scores: list[float]) -> None:
+    def accept(self, theta_new: np.ndarray, accepted_last: list[float | None],
+               accepted_anchor: list[float | None] | None = None) -> None:
         self.last = theta_new.copy()
-        self.history.extend(float(s) for s in accepted_last_scores if s is not None)
+        sl = [float(s) for s in accepted_last if s is not None]
+        sa = [float(s) for s in (accepted_anchor or []) if s is not None]
+        if sl:
+            self.history.append(float(np.median(sl)))
+        if sa:
+            self.history_anchor.append(float(np.median(sa)))
+
+
+def replay_flags(series: list[list[tuple[float | None, float | None]]], threshold: float, threshold_anchor: float,
+                 mad_k: float, history: int, anchor_adaptive: bool = True) -> list[list[bool]]:
+    """Re-apply the BurstGuard decision rule offline to per-round unit scores [(S_last, S_anchor), ...]
+    (used by `burstguard calibrate` to estimate the false-positive rate of candidate thresholds)."""
+    def adaptive(floor, hist):
+        h = hist[-history:]
+        if len(h) >= 3:
+            med = float(np.median(h))
+            return max(floor, med + mad_k * float(np.median(np.abs(np.array(h) - med))))
+        return floor
+    h_last: list[float] = []
+    h_anchor: list[float] = []
+    out = []
+    for units in series:
+        thr = adaptive(threshold, h_last)
+        thr_a = adaptive(threshold_anchor, h_anchor) if anchor_adaptive else threshold_anchor
+        flags = [bool((sl is not None and sl > thr) or (sa is not None and sa > thr_a)) for sl, sa in units]
+        out.append(flags)
+        sl_ok = [sl for (sl, _), f in zip(units, flags) if not f and sl is not None]
+        sa_ok = [sa for (_, sa), f in zip(units, flags) if not f and sa is not None]
+        if len(sl_ok) + len(sa_ok) and not all(flags):
+            if sl_ok:
+                h_last.append(float(np.median(sl_ok)))
+            if sa_ok:
+                h_anchor.append(float(np.median(sa_ok)))
+    return out

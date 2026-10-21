@@ -178,3 +178,15 @@ def test_analysis_helpers():
     assert auc([0.1, 0.2], [0, 0]) is None
     fpr, tpr = roc_curve([0.1, 0.2, 0.8, 0.9], [0, 0, 1, 1])
     assert fpr[0] == tpr[0] == 0.0 and fpr[-1] == tpr[-1] == 1.0 and (0.0, 1.0) in set(zip(fpr, tpr))
+
+
+def test_burstguard_replay_rule():
+    from burstguard.defenses.burstguard import replay_flags
+    drift = [[(0.05, 0.05 + 0.06 * r)] * 4 for r in range(30)]       # smooth benign anchor drift up to ~1.8
+    fixed = replay_flags(drift, 0.15, 0.5, 5.0, 5, anchor_adaptive=False)
+    adapt = replay_flags(drift, 0.15, 0.5, 5.0, 5, anchor_adaptive=True)
+    assert any(any(f) for f in fixed) and not any(any(f) for f in adapt)
+    attack = [list(u) for u in drift]
+    attack[10][2] = (3.0, 3.5)                                          # one injected unit
+    flags = replay_flags(attack, 0.15, 0.5, 5.0, 5, anchor_adaptive=True)
+    assert flags[10] == [False, False, True, False] and sum(sum(f) for f in flags) == 1

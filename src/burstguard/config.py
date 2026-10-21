@@ -113,11 +113,13 @@ DEFAULTS: dict[str, Any] = {
         "step_size": 0.1,
         "width_max": 6,
         "amplitude_max": 2.0,
-        "threshold": 0.15,       # for the per-round score (vs. last accepted global)
-        "threshold_anchor": 0.5, # for the accumulated score (vs. pre-trained model)
+        "threshold": 0.15,       # floor for the per-round score (vs. last accepted global)
+        "threshold_anchor": 0.5, # floor for the accumulated score (vs. pre-trained model)
+        "anchor_adaptive": True, # anchor threshold also follows benign drift: max(floor, median + mad_k * MAD)
         "mad_k": 5.0,
-        "history": 5,
+        "history": 5,            # rounds of accepted scores used by the adaptive thresholds
         "both_directions": True,
+        "threads": 0,            # torch threads while screening (clients are idle then); 0 = min(4, CPUs - 1)
     },
     "sim": {
         "num_cpus": 0,

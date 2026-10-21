@@ -23,7 +23,7 @@ số phiên bản trong tên và trong nội dung.
 | Phòng thủ | `fedavg`, `clip_noise`, `krum`, `multikrum`, `trimmed`, `median`, `flame`, `fltrust`, `lora_reset`, **`burstguard`** |
 | Secure aggregation | `secagg.enabled`; `secagg.groups>1` = SecAgg theo nhóm (server chỉ thấy tổng của từng nhóm) |
 | Thước đo | MASE, MAE, sMAPE + ASR, ASR chặt, TE, AE, UPR, tuổi thọ backdoor L50, TPR/FPR/AUC (ROC) của BurstGuard, chi phí CPU |
-| Thí nghiệm | `experiments/E0…E9.toml` (688 job), chạy theo shard trên 5 VM, tự tiếp tục khi bị ngắt |
+| Thí nghiệm | `experiments/E0…E9.toml` (697 job), chạy theo shard trên 5 VM, tự tiếp tục khi bị ngắt |
 | Phân tích | `burstguard analyze` → bảng CSV/Markdown/LaTeX, CI bootstrap 95%, Wilcoxon + Holm, hình PNG/PDF |
 
 ---
@@ -76,7 +76,7 @@ Gỡ v0.2.0: `rm -rf ~/burstguard-v0.2.0` (không ảnh hưởng v0.1.1 và dữ
 cd ~/burstguard-v0.2.0 && source .venv/bin/activate
 burstguard doctor            # PASS/WARN/FAIL; FAIL phải sửa
 burstguard smoke             # ~1–2 phút: 8 bước gồm cả Flower + SecAgg+ thật
-python -m pytest -q          # 14 bài kiểm thử (~1–2 phút)
+python -m pytest -q          # 15 bài kiểm thử (~1–2 phút)
 burstguard model-download    # tải TTM-R2 vào ~/burstguard-shared/hf
 ```
 
@@ -139,6 +139,7 @@ Các khoá cấu hình chính (đầy đủ trong `src/burstguard/config.py`):
 | `defense.name` | `fedavg` | xem bảng §0 |
 | `secagg.enabled` / `secagg.groups` | false / 1 | secure aggregation; nhóm > 1 = SecAgg theo nhóm |
 | `burstguard.reference` | `both` | so với mô hình vừa chấp nhận (`threshold`) và mô hình gốc (`threshold_anchor`) |
+| `burstguard.anchor_adaptive` | `true` | ngưỡng anchor bám theo độ trôi lành tính (median + k·MAD); `false` = ngưỡng cố định |
 | `burstguard.mode` | `enforce` | `monitor` = chỉ chấm điểm, không loại (dùng để hiệu chỉnh) |
 
 ---
@@ -156,7 +157,7 @@ Các khoá cấu hình chính (đầy đủ trong `src/burstguard/config.py`):
 | `E6_adaptive` | RQ3 | tấn công thích nghi, Neurotoxin, trigger ngoài vùng tìm kiếm | 48 | ~10 h |
 | `E7_secagg` | RQ3 | SecAgg theo nhóm {1,2,4,5,10} × {fedavg, burstguard, median} | 78 | ~25 h |
 | `E8_system` | RQ4 | Flower + SecAgg+ thật: thời gian vòng, chi phí phòng thủ | 8 | ~1 h |
-| `E9_ablation` | RQ3 | ablation BurstGuard: 1 tham chiếu, bỏ tối ưu (burst ngẫu nhiên), ít bước/ít probe, vùng tìm kiếm nhỏ, 1 chiều | 99 | ~10 h |
+| `E9_ablation` | RQ3 | ablation BurstGuard: 1 tham chiếu, bỏ tối ưu (burst ngẫu nhiên), ít bước/ít probe, vùng tìm kiếm nhỏ, 1 chiều, ngưỡng anchor cố định | 108 | ~11 h |
 
 \* Ước tính sơ bộ cho VM 8 vCPU / 9,7 GB RAM (4 worker), cộng dồn; chia cho 5 VM ⇒ khoảng 1–2 ngày.
 **Hãy đo thật**: chạy `--quick` trước, rồi một job thật và gửi mình thời gian để mình chỉnh lại kế hoạch.
@@ -171,7 +172,9 @@ bash scripts/collect_logs.sh --grid E3_defenses
 # (b) Hiệu chỉnh ngưỡng BurstGuard (E0), rồi đọc ngưỡng gợi ý:
 burstguard grid run experiments/E0_calibration.toml
 burstguard calibrate experiments/E0_calibration.toml
-#     -> sửa threshold / threshold_anchor trong configs/base.toml nếu khác nhiều so với mặc định 0.15 / 0.5
+#     -> in ra: phân vị điểm sạch, điểm anchor theo vòng (độ trôi), và 3 phương án ngưỡng kèm FPR khi "chạy lại" luật
+#        trên dữ liệu E0 (current config / adaptive anchor / fixed anchor; ngưỡng gợi ý = 1,5 × điểm sạch lớn nhất)
+#     -> sửa threshold / threshold_anchor / anchor_adaptive trong configs/base.toml theo phương án có FPR = 0
 #     -> LÀM TRƯỚC các lưới khác, rồi chép configs/base.toml giống hệt sang cả 5 VM:
 #        for h in vm2 vm3 vm4 vm5; do scp configs/base.toml $h:~/burstguard-v0.2.0/configs/; done
 #        (analyze sẽ cảnh báo nếu các job trong một lưới chạy với base.toml khác nhau)
@@ -251,9 +254,18 @@ và đoạn cuối log. Khi lỗi, `summary.json` có thêm trường `hint` g�
 - **SecAgg:** engine `flower` dùng giao thức SecAgg+ thật; engine `local` mô phỏng đúng phép cắt ±8 và lượng tử hoá ngẫu nhiên
   2²² mức của Flower. `burstguard equivalence` đối chiếu hai engine.
 
-Kiểm thử nội bộ (dữ liệu tổng hợp, TTM khởi tạo ngẫu nhiên, decoder, 8 vòng, 2/20 site độc hại, tấn công `scale`):
-FedAvg để ASR (val) tăng 0,008 → 0,38; BurstGuard gắn cờ mọi vòng bị tấn công (điểm 1,0–2,4 so với ngưỡng 0,15) và giữ
-ASR ở 0,008. Đây chỉ là kiểm tra pipeline, **không** phải số liệu cho bài — số liệu bài phải lấy từ TTM-R2 + Milan.
+Kiểm thử nội bộ v0.2.0 (dữ liệu tổng hợp, TTM khởi tạo ngẫu nhiên, decoder, 20 site, 8 vòng, 2 vCPU) — chỉ để kiểm tra
+pipeline, **không** phải số liệu cho bài (số liệu bài phải lấy từ TTM-R2 + Milan):
+
+| Lần chạy | MASE test | ASR test | BurstGuard |
+|---|---|---|---|
+| Sạch + BurstGuard | 0,813 | 0,000 | 0/8 vòng bị loại (điểm last ≤ 0,071 < 0,15; điểm anchor trôi 0,04 → 0,38) |
+| `scale` (2 site độc hại) + SecAgg 5 nhóm + BurstGuard | 0,811 | 0,000 | gắn cờ đúng 16/16 nhóm có site độc hại, 0/24 nhóm lành (AUC 1,0); điểm nhóm độc 8,8–77 |
+| `scale` (2 site độc hại) + FedAvg, không phòng thủ | 1,379 | 0,379 | — (ASR val tăng 0,008 → 0,383 qua 8 vòng) |
+
+Điểm anchor tăng đều theo vòng trên huấn luyện lành tính → v0.2.0 dùng ngưỡng anchor thích nghi (`anchor_adaptive`).
+Chi phí sàng lọc: ~21 s CPU/vòng cho 1 đơn vị, ~113 s cho 5 nhóm trên 2 vCPU; trên VM 8 vCPU BurstGuard dùng tối đa 4 luồng
+khi client đang rảnh (`burstguard.threads`).
 
 ---
 

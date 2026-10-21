@@ -226,8 +226,9 @@ class ServerLogic:
         new_theta = theta + delta if accepted else theta.copy()
         if self.bg is not None and accepted:
             bi = rec.get("burstguard", {})
-            acc = [s for s, f in zip(bi.get("score_last", []), bi.get("flags", [])) if not f]
-            self.bg.accept(new_theta, acc)
+            fl = bi.get("would_flag", [])  # monitor mode: thresholds evolve as if enforcing
+            self.bg.accept(new_theta, [s for s, f in zip(bi.get("score_last", []), fl) if not f],
+                           [s for s, f in zip(bi.get("score_anchor", []), fl) if not f])
         if self.lora_reset is not None:
             new_theta, linfo = self.lora_reset.apply(new_theta, rnd)
             rec["lora_reset"] = linfo

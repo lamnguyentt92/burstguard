@@ -28,13 +28,16 @@ Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATC
 - BurstGuard: aggregate-level screening that is compatible with secure aggregation. Worst-case bounded burst search
   (projected sign-gradient ascent, both directions, restarts) on server-held probe windows; relative forecast shift against
   the last accepted model (`threshold`, adaptive median + k·MAD) and the initial model (`threshold_anchor`);
-  `enforce` / `monitor` modes; per-group screening under grouped secure aggregation.
+  `enforce` / `monitor` modes; per-group screening under grouped secure aggregation; adaptive anchor threshold
+  (`anchor_adaptive`) so smooth benign drift over long runs is not flagged; multi-threaded screening while clients idle.
+- `burstguard calibrate`: clean-score percentiles, anchor drift per round, and offline replay of the decision rule
+  (false-positive rate) for the current and suggested thresholds.
 - Secure aggregation: real SecAgg+ (Flower engine); emulated SecAgg with Flower's clipping and 2^22-level stochastic
   quantization; grouped SecAgg (`secagg.groups > 1`).
 - Metrics: MASE (daily/weekly), MAE, sMAPE, ASR, strict ASR, target error, attack effect, under-prediction rate,
   backdoor lifespan (L50), detection TPR/FPR, malicious-kept rate, server defense CPU time, update size.
 - Baselines: zero-shot, local-only, centralized (`burstguard zeroshot|local|central`).
-- Experiment grids `experiments/E0_calibration` … `E9_ablation` (688 jobs): deterministic job ids, `--shard k/n`
+- Experiment grids `experiments/E0_calibration` … `E9_ablation` (697 jobs): deterministic job ids, `--shard k/n`
   (cost-balanced), resume after interruption, retry of failed jobs, `--quick` mode, `grid status|list`,
   `[[variants]]` for one-factor-at-a-time ablations.
 - Analysis: `burstguard analyze` → `summary.csv|md|tex` with stratified bootstrap 95% CIs (seeds × sites),
@@ -43,7 +46,7 @@ Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATC
 - `burstguard equivalence`: compares the local and Flower engines on the same configuration.
 - `collect_logs.sh --grid NAME`: grid progress and failed-job tracebacks; reports include other checkouts on the machine
   and shared-data status.
-- Tests: 14 (unit + tiny federations covering every attack/defense family).
+- Tests: 15 (unit + tiny federations covering every attack/defense family).
 
 ### Fixed
 - Noisy third-party output (TSFM `get_model` warnings, weight-loading progress bars, HF Hub token warnings).

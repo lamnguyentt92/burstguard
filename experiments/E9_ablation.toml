@@ -8,6 +8,7 @@
 #   probe_windows=16 / 32   : fewer server probe windows (default 64)
 #   width_max=3 / amplitude_max=1.0 : smaller search space (default 6 slots, 2 sigma)
 #   both_directions=false   : search only for downward shifts
+#   anchor_adaptive=false   : fixed anchor threshold (catches slow ramps, may false-alarm on long benign drift)
 [grid]
 name = "E9_ablation"
 base_config = "configs/base.toml"
@@ -43,6 +44,8 @@ seeds = [0, 1, 2]
 "burstguard.amplitude_max" = 1.0
 [[variants]]
 "burstguard.both_directions" = false
+[[variants]]
+"burstguard.anchor_adaptive" = false
 
 [analysis]
 split = "test"

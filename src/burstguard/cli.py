@@ -297,30 +297,69 @@ def cmd_analyze(a, ctx):
 
 
 def cmd_calibrate(a, ctx):
-    """Suggest a BurstGuard threshold from monitor-mode runs on clean federations."""
+    """Suggest BurstGuard thresholds from monitor-mode runs on clean federations (E0) and replay the decision rule."""
+    import tomllib
+
     import numpy as np
+    from burstguard.defenses.burstguard import replay_flags
     from burstguard.experiments import grid as G
     target = resolve(a.target)
     gdir = G.grid_dir(G.load_grid(target), quick=a.quick) if target.suffix == ".toml" else target
     acc: dict[str, list[float]] = {"score_last": [], "score_anchor": []}
-    for m in gdir.glob("*/metrics.jsonl"):
+    jobs = []
+    by_round: dict[int, list[float]] = {}
+    for m in sorted(gdir.glob("*/metrics.jsonl")):
+        series = []
         for line in m.read_text().splitlines():
             r = json.loads(line)
             if r.get("kind") == "round" and r.get("burstguard") and not r.get("attack_active"):
+                b = r["burstguard"]
                 for k in acc:
-                    acc[k] += [x for x in r["burstguard"].get(k, []) if x is not None]
-    if not any(acc.values()):
+                    acc[k] += [x for x in b.get(k, []) if x is not None]
+                series.append(list(zip(b.get("score_last", []), b.get("score_anchor", []))))
+                by_round.setdefault(int(r["round"]), []).extend(x for x in b.get("score_anchor", []) if x is not None)
+        if series:
+            cfgp = m.parent / "config.toml"
+            bgc = tomllib.loads(cfgp.read_text())["burstguard"] if cfgp.exists() else {}
+            jobs.append((m.parent.name, series, bgc))
+    if not jobs:
         raise RuntimeError(f"no BurstGuard scores from clean rounds in {gdir}")
     out = {}
     for k, v in acc.items():
         if v:
             s = np.array(v)
-            out[k] = {"n": int(s.size), **{f"p{p}": float(np.percentile(s, p)) for p in (50, 90, 95, 99, 100)}}
-    sugg = {"burstguard.threshold (FPR~1%)": out.get("score_last", {}).get("p99"),
-            "burstguard.threshold_anchor (FPR~1%)": out.get("score_anchor", {}).get("p99")}
-    print(json.dumps({"clean_round_scores": out, "suggested": sugg}, indent=2))
-    ctx.save_json("calibration.json", {"clean_round_scores": out, "suggested": sugg})
-    ctx.set(**{k.split(" ")[0]: v for k, v in sugg.items()})
+            out[k] = {"n": int(s.size), **{f"p{p}": round(float(np.percentile(s, p)), 4) for p in (50, 90, 95, 99, 100)}}
+    drift = {f"round {k}": round(float(np.median(v)), 4) for k, v in sorted(by_round.items()) if v}
+
+    def replay(thr, thr_a, adaptive):
+        n = f = 0
+        for _, series, bgc in jobs:
+            flags = replay_flags(series, thr, thr_a, float(bgc.get("mad_k", 5.0)), int(bgc.get("history", 5)), adaptive)
+            n += sum(len(x) for x in flags); f += sum(sum(x) for x in flags)
+        return round(f / max(n, 1), 4)
+
+    mg = float(a.margin)
+    sug = lambda v: None if v is None else round(mg * float(v), 3)  # noqa: E731 - margin over the clean maximum
+    max_last = out.get("score_last", {}).get("p100")
+    hist0 = int(jobs[0][2].get("history", 5))
+    early = [x for _, series, _ in jobs for units in series[:hist0] for (_, x) in units if x is not None]
+    max_early = float(np.max(early)) if early else None
+    cur = jobs[0][2]
+    cand = {
+        "current config": (cur.get("threshold"), cur.get("threshold_anchor"), cur.get("anchor_adaptive", True)),
+        f"suggested, adaptive anchor ({mg}x clean max)": (sug(max_last), sug(max_early), True),
+        f"suggested, fixed anchor ({mg}x clean max)": (sug(max_last), sug(out.get("score_anchor", {}).get("p100")), False),
+    }
+    rep = {}
+    for name, (t, ta, ad) in cand.items():
+        if t is None or ta is None:
+            continue
+        rep[name] = {"threshold": t, "threshold_anchor": ta, "anchor_adaptive": ad, "replayed_fpr_units": replay(t, ta, ad)}
+    res = {"jobs": len(jobs), "clean_unit_scores": out, "anchor_score_median_by_round": drift, "candidates": rep,
+           "note": "set burstguard.threshold / threshold_anchor / anchor_adaptive in configs/base.toml on ALL VMs"}
+    print(json.dumps(res, indent=2))
+    ctx.save_json("calibration.json", res)
+    ctx.set(jobs=len(jobs), suggested_threshold=sug(max_last), suggested_threshold_anchor=sug(max_early))
 
 
 def cmd_smoke(a, ctx):
@@ -448,7 +487,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--quick", action="store_true"); s.add_argument("--no-figures", action="store_true")
     s.set_defaults(fn=cmd_analyze)
     s = sub.add_parser("calibrate", help="BurstGuard threshold from monitor-mode clean runs")
-    s.add_argument("target"); s.add_argument("--quick", action="store_true"); s.set_defaults(fn=cmd_calibrate)
+    s.add_argument("target"); s.add_argument("--quick", action="store_true")
+    s.add_argument("--margin", type=float, default=1.5, help="suggested threshold = margin x largest clean score")
+    s.set_defaults(fn=cmd_calibrate)
 
     s = sub.add_parser("smoke", help="end-to-end test without network / real data")
     s.add_argument("--workers", type=int, default=2); s.set_defaults(fn=cmd_smoke)
