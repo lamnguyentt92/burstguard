@@ -46,11 +46,11 @@ Gói hệ thống cần có sẵn: `git`, `bash`, `curl` (hoặc `wget`), `tar`.
 ```bash
 git clone https://github.com/lamnguyentt92/burstguard.git
 cd burstguard
-git checkout v0.1.0          # đúng phiên bản của tài liệu này
+git checkout release/v0.1.0  # đúng phiên bản của tài liệu này (mỗi phiên bản có nhánh release/vX.Y.Z)
 cat VERSION                  # phải in 0.1.0
 ```
 
-Cập nhật về sau: `git fetch --tags && git checkout v0.2.0` (khi có).
+Chuyển phiên bản về sau: `git fetch origin && git checkout release/v0.1.1` (hoặc `main` = bản mới nhất).
 
 ---
 

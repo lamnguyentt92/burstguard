@@ -8,23 +8,25 @@ Mục tiêu: bài nộp collection *Trustworthy and Efficient Time-Series Intell
 
 | Phiên bản | Nội dung | Hướng dẫn (tiếng Việt) |
 |---|---|---|
-| **v0.1.0** (hiện tại) | Môi trường ảo cô lập, pipeline dữ liệu Milan, TTM-R2, baseline, FL sạch (FedAvg × 4 chế độ fine-tune), gom log | [docs/README_v0.1.0.md](docs/README_v0.1.0.md) |
+| **v0.1.1** (hiện tại) | v0.1.0 + tắt telemetry Flower; đánh dấu phiên bản bằng nhánh `release/vX.Y.Z` | [docs/README_v0.1.1.md](docs/README_v0.1.1.md) |
+| v0.1.0 | Môi trường ảo cô lập, pipeline dữ liệu Milan, TTM-R2, baseline, FL sạch (FedAvg × 4 chế độ fine-tune), gom log | [docs/README_v0.1.0.md](docs/README_v0.1.0.md) |
 | v0.2.0 (dự kiến) | Đánh giá độ bền: phòng thủ BurstGuard tương thích SecAgg+, các phương pháp tổng hợp bền, kịch bản kiểm thử | — |
 
+Mỗi phiên bản có nhánh `release/vX.Y.Z` (`git checkout release/v0.1.1`); `main` luôn là bản mới nhất.
 Lịch sử thay đổi: [CHANGELOG.md](CHANGELOG.md). Phiên bản đang dùng: `cat VERSION` hoặc `burstguard --version`.
 
 ## Bắt đầu nhanh
 
 ```bash
 git clone https://github.com/lamnguyentt92/burstguard.git && cd burstguard
-git checkout v0.1.0
+git checkout release/v0.1.1
 bash scripts/setup_venv.sh          # tạo .venv cô lập trong dự án (không cần sudo)
 source .venv/bin/activate
 burstguard doctor && burstguard smoke
 bash scripts/collect_logs.sh        # gom log (thành công hay thất bại) -> reports/bg_report_*.txt
 ```
 
-Chi tiết từng bước, cấu hình và cách gửi log: **[docs/README_v0.1.0.md](docs/README_v0.1.0.md)**.
+Chi tiết từng bước, cấu hình và cách gửi log: **[docs/README_v0.1.1.md](docs/README_v0.1.1.md)**.
 
 ## Dữ liệu & giấy phép
 

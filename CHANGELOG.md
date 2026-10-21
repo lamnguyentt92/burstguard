@@ -1,7 +1,14 @@
 # Lịch sử thay đổi
 
-Đánh số theo [Semantic Versioning](https://semver.org/lang/vi/): `MAJOR.MINOR.PATCH`. Mỗi phiên bản có git tag `vX.Y.Z`
-và hướng dẫn riêng `docs/README_vX.Y.Z.md`. Bản sửa lỗi sau khi bạn gửi log sẽ tăng số PATCH (v0.1.1, v0.1.2, …).
+Đánh số theo [Semantic Versioning](https://semver.org/lang/vi/): `MAJOR.MINOR.PATCH`. Mỗi phiên bản có nhánh `release/vX.Y.Z`
+trên GitHub và hướng dẫn riêng `docs/README_vX.Y.Z.md`. Bản sửa lỗi sau khi bạn gửi log sẽ tăng số PATCH (v0.1.1, v0.1.2, …).
+
+## [0.1.1] — 2026-10-21
+
+### Sửa
+- Tắt telemetry mặc định của Flower (`FLWR_TELEMETRY_ENABLED=0`) — v0.1.0 gửi thống kê sử dụng tới telemetry.flower.ai.
+- Hướng dẫn checkout theo nhánh `release/vX.Y.Z` (tag không đẩy được từ phiên phát triển).
+- Không đổi thư viện/cấu hình: không cần cài lại `.venv`.
 
 ## [0.1.0] — 2026-10-21
 

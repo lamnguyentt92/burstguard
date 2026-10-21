@@ -41,6 +41,7 @@ def isolate_environment() -> None:
         "TOKENIZERS_PARALLELISM": "false",
         "HF_HUB_DISABLE_TELEMETRY": "1",
         "RAY_USAGE_STATS_ENABLED": "0",
+        "FLWR_TELEMETRY_ENABLED": "0",  # Flower mặc định gửi telemetry tới telemetry.flower.ai -> tắt
         "RAY_DEDUP_LOGS": "0",
         "TSFM_PYTHON_LOGGING_LEVEL": "WARNING",
         "TRANSFORMERS_VERBOSITY": "error",
