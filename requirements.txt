@@ -1,0 +1,12 @@
+# Phụ thuộc đã ghim phiên bản cho BurstGuard v0.1.0 (cài thử trên Python 3.11 và 3.12; có wheel cho 3.13; Linux x86_64; chỉ CPU).
+# torch KHÔNG nằm ở đây: scripts/setup_venv.sh cài torch==2.11.0 bản CPU riêng trước.
+flwr[simulation]==1.41.0
+ray==2.55.1
+granite-tsfm==0.3.10
+transformers==5.20.2
+peft==0.21.2
+scikit-learn==1.7.2
+pandas==3.0.6
+numpy==2.4.6
+requests>=2.33,<3
+pytest>=8

@@ -1,0 +1,16 @@
+# môi trường & công cụ cục bộ (không commit)
+.venv/
+.tools/
+.cache/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# dữ liệu & kết quả chạy (lớn, sinh ra trên máy)
+data/raw/
+data/processed/
+runs/
+logs/
+reports/
+*.tar.gz

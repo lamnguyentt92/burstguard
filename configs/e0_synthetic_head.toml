@@ -1,0 +1,22 @@
+# Thử FL với TTM-R2 THẬT (tải từ Hugging Face) trên dữ liệu TỔNG HỢP.
+# Dùng khi đã có mạng tới huggingface.co nhưng chưa tải dữ liệu Milan.
+# Chuẩn bị:  burstguard data synthetic
+[run]
+name = "e0_synthetic_head"
+seed = 0
+
+[data]
+path = "data/processed/synthetic.npz"
+num_sites = 20
+
+[model]
+source = "hf"
+path = "ibm-granite/granite-timeseries-ttm-r2"
+
+[train]
+peft = "head"
+lr = 1e-3
+
+[fl]
+rounds = 10
+eval_every = 2
