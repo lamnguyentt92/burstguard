@@ -1,0 +1,23 @@
+# E3 - defense matrix (RQ3): no attack (clean cost, false positives) + 3 attacks x 9 defenses x 2 fine-tuning modes.
+# clip_noise = norm clipping (median norm) + weak DP noise; lora_reset only for LoRA.
+[grid]
+name = "E3_defenses"
+base_config = "configs/base.toml"
+seeds = [0, 1, 2]
+
+[fixed]
+"defense.noise_multiplier" = 0.1
+"defense.krum_f" = 2
+
+[factors]
+"attack.type" = ["none", "poison", "scale", "constrain_scale"]
+"defense.name" = ["fedavg", "clip_noise", "multikrum", "trimmed", "median", "flame", "fltrust", "lora_reset", "burstguard"]
+"train.peft" = ["head", "lora"]
+
+[[exclude]]
+"defense.name" = "lora_reset"
+"train.peft" = "head"
+
+[analysis]
+split = "test"
+reference = { "defense.name" = "fedavg" }

@@ -1,0 +1,26 @@
+# E7 - secure aggregation (RQ3): with SecAgg the server only sees group sums. groups = 1 is standard SecAgg+
+# (only aggregate-level defenses possible); more groups trade aggregation granularity for robustness.
+[grid]
+name = "E7_secagg"
+base_config = "configs/base.toml"
+seeds = [0, 1, 2]
+
+[fixed]
+"secagg.enabled" = true
+"train.peft" = "head"
+
+[factors]
+"attack.type" = ["none", "scale"]
+"secagg.groups" = [1, 2, 4, 5, 10]
+"defense.name" = ["fedavg", "burstguard", "median"]
+
+[[exclude]]
+"defense.name" = "median"
+"secagg.groups" = 1
+[[exclude]]
+"defense.name" = "median"
+"secagg.groups" = 2
+
+[analysis]
+split = "test"
+reference = { "defense.name" = "fedavg" }

@@ -1,34 +1,66 @@
-# Lịch sử thay đổi
+# Changelog
 
-Đánh số theo [Semantic Versioning](https://semver.org/lang/vi/): `MAJOR.MINOR.PATCH`. Mỗi phiên bản có nhánh `release/vX.Y.Z`
-trên GitHub và hướng dẫn riêng `docs/README_vX.Y.Z.md`. Bản sửa lỗi sau khi bạn gửi log sẽ tăng số PATCH (v0.1.1, v0.1.2, …).
+Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
+`release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
+
+## [0.2.0] — 2026-10-22
+
+### Changed (requested after the v0.1.1 VM report)
+- All code output (logs, errors, hints, comments) is in English; only README files are in Vietnamese.
+- Version in every output: run dirs `runs/<ts>_v0.2.0_<cmd>_<name>/`, grid results `results/v0.2.0/<grid>/`,
+  setup logs `logs/setup_v0.2.0_<ts>.log`, reports `reports/bg_report_v0.2.0_<host>_<ts>.txt`, a `"v"` field in every
+  JSONL record, and `[burstguard v0.2.0]` prefixes on console lines.
+- Side-by-side installs: one checkout per version (`~/burstguard-vX.Y.Z`), a version-stamped `.venv`
+  (`.venv/burstguard_version`), and the CLI refuses to run when the active venv does not belong to the checkout or was
+  built for another version (override: `BURSTGUARD_SKIP_VENV_CHECK=1`).
+- Large assets moved to a shared, versioned-by-format directory `~/burstguard-shared` (`BURSTGUARD_SHARED`):
+  raw Milan files, `milan_d1.npz` / `synthetic_d1.npz` (data format 1, checked on load), Hugging Face cache.
+- Replaced the `fl/` package with `fedcore.py` (shared client/server logic) and two engines:
+  `local` (deterministic process pool, fast) and `flower` (Flower simulation, real SecAgg+ via `SecAggPlusWorkflow`).
+- Removed `scripts/run_e1.sh` and `configs/e*_*.toml`; experiments are now grid files in `experiments/`.
+
+### Added
+- Attacks (simulated compromised clients): `poison`, `scale` (model replacement, boost n/m), `constrain_scale`
+  (norm-matched), `neurotoxin` (low-change coordinates), `adaptive` (random clean-label burst decoys). Burst trigger with
+  amplitude in units of the site std; target ρ·y.
+- Defenses: `clip_noise` (norm clipping + weak DP), `krum`, `multikrum`, `trimmed`, `median`, `flame`, `fltrust`,
+  `lora_reset` (periodic LoRA reset), and `burstguard`.
+- BurstGuard: aggregate-level screening that is compatible with secure aggregation. Worst-case bounded burst search
+  (projected sign-gradient ascent, both directions, restarts) on server-held probe windows; relative forecast shift against
+  the last accepted model (`threshold`, adaptive median + k·MAD) and the initial model (`threshold_anchor`);
+  `enforce` / `monitor` modes; per-group screening under grouped secure aggregation.
+- Secure aggregation: real SecAgg+ (Flower engine); emulated SecAgg with Flower's clipping and 2^22-level stochastic
+  quantization; grouped SecAgg (`secagg.groups > 1`).
+- Metrics: MASE (daily/weekly), MAE, sMAPE, ASR, strict ASR, target error, attack effect, under-prediction rate,
+  backdoor lifespan (L50), detection TPR/FPR, malicious-kept rate, server defense CPU time, update size.
+- Baselines: zero-shot, local-only, centralized (`burstguard zeroshot|local|central`).
+- Experiment grids `experiments/E0_calibration` … `E9_ablation` (688 jobs): deterministic job ids, `--shard k/n`
+  (cost-balanced), resume after interruption, retry of failed jobs, `--quick` mode, `grid status|list`,
+  `[[variants]]` for one-factor-at-a-time ablations.
+- Analysis: `burstguard analyze` → `summary.csv|md|tex` with stratified bootstrap 95% CIs (seeds × sites),
+  paired Wilcoxon tests with Holm correction (`tests.csv`), PNG/PDF figures; unit-level BurstGuard TPR/FPR, ROC AUC
+  (in-run and against the matching clean configuration) and ROC curves; `burstguard calibrate` for thresholds.
+- `burstguard equivalence`: compares the local and Flower engines on the same configuration.
+- `collect_logs.sh --grid NAME`: grid progress and failed-job tracebacks; reports include other checkouts on the machine
+  and shared-data status.
+- Tests: 14 (unit + tiny federations covering every attack/defense family).
+
+### Fixed
+- Noisy third-party output (TSFM `get_model` warnings, weight-loading progress bars, HF Hub token warnings).
+- Default scale boost is n/m (not n), so two colluding attackers no longer destroy the global model.
+- BurstGuard anchor-only reference produced false positives on clean runs; replaced by the two-reference rule.
+- setuptools pinned `<82` (torch compatibility); numpy 2.4.6 / scipy 1.17.1 (wheels for Python 3.11).
 
 ## [0.1.1] — 2026-10-21
 
-### Sửa
-- Tắt telemetry mặc định của Flower (`FLWR_TELEMETRY_ENABLED=0`) — v0.1.0 gửi thống kê sử dụng tới telemetry.flower.ai.
-- Hướng dẫn checkout theo nhánh `release/vX.Y.Z` (tag không đẩy được từ phiên phát triển).
-- Không đổi thư viện/cấu hình: không cần cài lại `.venv`.
+### Fixed
+- Flower telemetry disabled by default (`FLWR_TELEMETRY_ENABLED=0`).
+- Guide checks out `release/vX.Y.Z` branches (tags cannot be pushed from the development session).
 
 ## [0.1.0] — 2026-10-21
 
-### Thêm
-- `scripts/setup_venv.sh`: tạo `.venv` cô lập trong dự án; tự tìm Python 3.11–3.13 hoặc tải Python 3.12 riêng qua `uv`
-  (không sửa PATH, không cần sudo); torch 2.11.0 bản CPU (tự chuyển sang PyPI nếu bị chặn); ghi `logs/setup_*.log/.status`.
-- `scripts/collect_logs.sh`: gom log thành công/thất bại thành `reports/bg_report_*.txt` + `.tar.gz` (chạy được cả khi `.venv` hỏng).
-- `scripts/run_e1.sh`: chạy trọn bộ E1 (model-check → zeroshot → FL head/decoder/lora/full), chế độ `--quick`.
-- Lệnh `burstguard`: `doctor`, `smoke`, `data synthetic|download|prepare|info`, `model-download`, `model-check`, `zeroshot`, `local`, `fl`.
-- Mỗi lần chạy có thư mục `runs/<id>/` với `console.log` (bắt ở mức file-descriptor, gồm log worker Ray), `summary.json`
-  (status + gợi ý khắc phục), `error.txt`, `metrics.jsonl`, `config.toml` đã hợp nhất.
-- Dữ liệu: tải Milan từ Harvard Dataverse (tiếp tục tải dở, kiểm MD5), đọc file `.txt/.gz/.zip` có/không header,
-  chọn 20 site + 8 probe (khối 5×5 ô, từ trung tâm ra ngoại vi), split train/val/test/holiday theo ngày; dữ liệu tổng hợp để thử.
-- Mô hình: nạp TTM-R2 qua `get_model` (biến thể `512-48-ft-r2.1`, xử lý token tần suất 10 phút), 4 chế độ fine-tune
-  (head, decoder, LoRA r=8 trên fc1/fc2, full); head-only có cache đầu ra decoder (tự kiểm tra khớp với forward đầy đủ).
-- FL: FedAvg lối legacy của Flower 1.41 (để v0.2 bật được SecAgg+), đánh giá tập trung MASE/MAE/sMAPE theo site, đo KiB/cập nhật
-  và thời gian vòng; client lỗi làm dừng lần chạy (`fl.strict=true`) thay vì bị nuốt im lặng.
-- Cô lập tài nguyên: bắt buộc chạy trong venv, `nice 10`, cache trong `.cache/`, Ray tự giới hạn theo CPU và RAM trống.
-- `tests/test_core.py`: 5 bài kiểm thử đơn vị.
-
-### Đã biết / chưa kiểm thử
-- Chưa chạy với trọng số TTM-R2 thật và chưa tải thật từ Dataverse (máy kiểm thử bị chặn hai địa chỉ này).
-- `run_simulation` của Flower 1.41 in cảnh báo "deprecated" — vẫn hoạt động; chế độ triển khai thật nhiều VM để bản sau.
+### Added
+- Isolated project venv (`scripts/setup_venv.sh`), log collector (`scripts/collect_logs.sh`).
+- CLI: `doctor`, `smoke`, `data synthetic|download|prepare|info`, `model-download`, `model-check`, `zeroshot`, `local`, `fl`.
+- Milan pipeline (Dataverse download with resume/MD5, reader, 20 sites + 8 probe blocks), TTM-R2 loading with four
+  fine-tuning modes, clean FedAvg on the Flower legacy path, per-run directories with `console.log` / `summary.json`.

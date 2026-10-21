@@ -1,8 +1,7 @@
-"""Dữ liệu tổng hợp giống hoạt động Internet Milan (để kiểm thử pipeline khi chưa có dữ liệu thật).
+"""Synthetic series resembling Milan internet activity (pipeline testing only - never for the paper).
 
-Chuỗi có chu kỳ ngày (thấp ban đêm, đỉnh chiều tối), chu kỳ tuần (cuối tuần thấp hơn),
-thang đo khác nhau giữa các site, nhiễu nhân và mức giảm dịp lễ cuối tháng 12.
-KHÔNG dùng số liệu tổng hợp cho bài báo.
+Daily profile (low at night, evening peak), weekly modulation, per-site scale, AR(1) multiplicative noise and a
+holiday dip from 2013-12-25.
 """
 from __future__ import annotations
 
@@ -28,24 +27,21 @@ def generate(num_sites: int = 20, num_probe: int = 8, days: int = DAYS, seed: in
     T = days * SLOTS_PER_DAY
     t = np.arange(T)
     day_idx = t // SLOTS_PER_DAY
-    weekday = (day_idx + 4) % 7          # 2013-11-01 là thứ Sáu (0=thứ Hai)
-    holiday = (day_idx >= 54)            # từ 2013-12-25
-    n = num_sites + num_probe
-    out = np.zeros((n, T), dtype=np.float32)
-    for i in range(n):
+    weekday = (day_idx + 4) % 7          # 2013-11-01 was a Friday (0 = Monday)
+    holiday = day_idx >= 54              # from 2013-12-25
+    out = np.zeros((num_sites + num_probe, T), dtype=np.float32)
+    for i in range(num_sites + num_probe):
         scale = float(np.exp(rng.normal(np.log(300.0), 0.8)))
         prof = _daily_profile(rng)
         weekly = np.where(weekday >= 5, rng.uniform(0.7, 0.9), 1.0)
         hol = np.where(holiday, rng.uniform(0.6, 0.85), 1.0)
         trend = 1.0 + rng.uniform(-0.05, 0.08) * (t / T)
         base = scale * prof[t % SLOTS_PER_DAY] * weekly * hol * trend
-        ar = np.zeros(T)
         eps = rng.normal(0, 0.06, T)
+        ar = np.zeros(T)
         for k in range(1, T):
             ar[k] = 0.9 * ar[k - 1] + eps[k]
-        x = base * np.exp(ar) * rng.lognormal(0, 0.05, T)
-        out[i] = np.maximum(x, 0.0)
+        out[i] = np.maximum(base * np.exp(ar) * rng.lognormal(0, 0.05, T), 0.0)
     meta = {"source": "synthetic", "seed": seed, "freq_min": 10, "start": "2013-11-01T00:00:00+01:00",
-            "sites": [{"site": i, "kind": "synthetic"} for i in range(num_sites)],
-            "note": "Dữ liệu tổng hợp chỉ để kiểm thử pipeline — không dùng cho bài báo."}
+            "note": "Synthetic data for pipeline tests only - not for the paper."}
     return out[:num_sites], out[num_sites:], meta, split_bounds(T)

@@ -1,3 +1,5 @@
-"""BurstGuard — nghiên cứu độ bền của fine-tuning liên kết các mô hình nền chuỗi thời gian tí hon."""
+"""BurstGuard: robustness of federated fine-tuning of tiny time-series foundation models."""
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
+VERSION_TAG = f"v{__version__}"
+DATA_FORMAT = 1  # bump when the processed .npz layout changes (file names carry this number)

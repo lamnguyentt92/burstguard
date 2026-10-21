@@ -1,131 +1,168 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BurstGuard — gom log để gửi phân tích (dùng được cả khi .venv hỏng).
+# BurstGuard - collect logs for analysis (works even when .venv is broken).
 #
-#   bash scripts/collect_logs.sh                # lần chạy gần nhất (runs/LATEST) + cài đặt gần nhất
-#   bash scripts/collect_logs.sh --last 3       # 3 lần chạy gần nhất
-#   bash scripts/collect_logs.sh --failed       # mọi lần chạy có status != success
-#   bash scripts/collect_logs.sh --run runs/<thư_mục>
-#   bash scripts/collect_logs.sh --setup        # chỉ nhật ký cài đặt (khi setup_venv.sh lỗi)
+#   bash scripts/collect_logs.sh               # latest run (runs/LATEST) + latest setup
+#   bash scripts/collect_logs.sh --last 3      # 3 most recent runs
+#   bash scripts/collect_logs.sh --failed      # every run whose status is not success
+#   bash scripts/collect_logs.sh --run runs/<dir>
+#   bash scripts/collect_logs.sh --setup       # installation logs only
+#   bash scripts/collect_logs.sh --grid E3_defenses   # grid status + failed jobs of a grid
 #
-# Kết quả:
-#   reports/bg_report_<host>_<thời_gian>.txt     -> DÁN NỘI DUNG FILE NÀY (hoặc đính kèm) khi báo lỗi
-#   reports/bg_report_<host>_<thời_gian>.tar.gz  -> bản đầy đủ (đính kèm nếu được yêu cầu)
+# Output (version in the file name):
+#   reports/bg_report_v<ver>_<host>_<time>.txt     -> paste or attach this file
+#   reports/bg_report_v<ver>_<host>_<time>.tar.gz  -> full bundle (only when asked)
 # =============================================================================
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-MODE="latest"; N=1; RUNSEL=""
+VER="$(cat VERSION 2>/dev/null || echo unknown)"
+MODE="latest"; N=1; RUNSEL=""; GRID=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --last) MODE="last"; N="${2:-1}"; shift ;;
     --failed) MODE="failed" ;;
     --run) MODE="run"; RUNSEL="${2:-}"; shift ;;
     --setup) MODE="setup" ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
-    *) echo "Tham số không hỗ trợ: $1"; exit 2 ;;
+    --grid) MODE="grid"; GRID="${2:-}"; shift ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    *) echo "unsupported argument: $1"; exit 2 ;;
   esac
   shift
 done
 
 mkdir -p reports
 TS="$(date +%Y%m%d-%H%M%S)"; HOST="$(hostname -s 2>/dev/null || hostname)"
-BASE="reports/bg_report_${HOST}_${TS}"
-TXT="${BASE}.txt"; TMP="$(mktemp -d)"; PKG="$TMP/bg_report_${HOST}_${TS}"; mkdir -p "$PKG"
+BASE="reports/bg_report_v${VER}_${HOST}_${TS}"
+TXT="${BASE}.txt"; TMP="$(mktemp -d)"; PKG="$TMP/$(basename "$BASE")"; mkdir -p "$PKG"
+SHARED="${BURSTGUARD_SHARED:-$HOME/burstguard-shared}"
 
 sec() { echo; echo "################ $*"; }
-clip() { # clip <file> <max_lines>
-  local f="$1" n="${2:-80}"
-  [ -f "$f" ] || { echo "(không có $f)"; return; }
-  local total; total=$(wc -l < "$f" 2>/dev/null || echo 0)
-  if [ "$total" -gt "$n" ]; then echo "... ($total dòng, hiện $n dòng cuối)"; tail -n "$n" "$f"; else cat "$f"; fi
-}
-strip() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }   # bỏ mã màu ANSI
+clip() { local f="$1" n="${2:-80}"; [ -f "$f" ] || { echo "(missing $f)"; return; }
+  local t; t=$(wc -l < "$f" 2>/dev/null || echo 0)
+  if [ "$t" -gt "$n" ]; then echo "... ($t lines, showing last $n)"; tail -n "$n" "$f"; else cat "$f"; fi; }
+strip() { sed -r 's/\x1B\[[0-9;]*[mK]//g'; }
 
-# ---- chọn các run
 RUNS=()
 case "$MODE" in
   latest) [ -f runs/LATEST ] && RUNS+=("$(cat runs/LATEST)") ;;
-  last)   while IFS= read -r d; do RUNS+=("$d"); done < <(ls -1dt runs/*/ 2>/dev/null | head -n "$N") ;;
+  last)   while IFS= read -r d; do RUNS+=("${d%/}"); done < <(ls -1dt runs/*/ 2>/dev/null | head -n "$N") ;;
   failed) for d in runs/*/; do s="$d/summary.json"
             if [ ! -f "$s" ] || ! grep -q '"status": "success"' "$s"; then RUNS+=("${d%/}"); fi; done ;;
   run)    RUNS+=("$RUNSEL") ;;
-  setup)  ;;
+  grid)   [ -f runs/LATEST ] && RUNS+=("$(cat runs/LATEST)") ;;
 esac
 
 {
-echo "BURSTGUARD REPORT  $(date -Iseconds)"
-sec "HỆ THỐNG"
-echo "version=$(cat VERSION 2>/dev/null)  git=$(git describe --tags --always --dirty 2>/dev/null) ($(git rev-parse --abbrev-ref HEAD 2>/dev/null))"
+echo "BURSTGUARD REPORT v$VER  $(date -Iseconds)"
+sec "SYSTEM"
+echo "version=$VER  git=$(git describe --tags --always --dirty 2>/dev/null) branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+echo "checkout=$ROOT  shared=$SHARED"
 echo "host=$HOST  os=$(uname -srm)  $( [ -r /etc/os-release ] && . /etc/os-release && echo "${PRETTY_NAME:-}")"
-echo "cpu=$(nproc)  mem_total=$(awk '/MemTotal/{printf "%.1fGiB",$2/1048576}' /proc/meminfo)  mem_avail=$(awk '/MemAvailable/{printf "%.1fGiB",$2/1048576}' /proc/meminfo)  disk_free=$(df -h . | awk 'NR==2{print $4}')"
-echo "shm=$(df -h /dev/shm 2>/dev/null | awk 'NR==2{print $2}')  ulimit_n=$(ulimit -n)  user=$(id -un)"
-echo "system_python=$(command -v python3) $(python3 -V 2>&1)"
+echo "cpu=$(nproc)  mem_total=$(awk '/MemTotal/{printf "%.1fGiB",$2/1048576}' /proc/meminfo)  mem_avail=$(awk '/MemAvailable/{printf "%.1fGiB",$2/1048576}' /proc/meminfo)  disk_free=$(df -h . | awk 'NR==2{print $4}')  shm=$(df -h /dev/shm 2>/dev/null | awk 'NR==2{print $2}')"
+GS="$(git status --porcelain 2>/dev/null | head -n 15)"; [ -n "$GS" ] && { echo "git status (modified files):"; echo "$GS" | sed 's/^/  /'; }
 if [ -x .venv/bin/python ]; then
-  echo "venv_python=$(.venv/bin/python -V 2>&1)"
-  .venv/bin/python -m pip list 2>/dev/null | grep -Ei '^(flwr|ray|torch|granite-tsfm|transformers|peft|numpy|pandas|scikit-learn|burstguard) ' | sed 's/^/  /'
+  echo "venv: $(.venv/bin/python -V 2>&1), stamp=$(cat .venv/burstguard_version 2>/dev/null || echo none)"
+  .venv/bin/python -m pip list 2>/dev/null | grep -Ei '^(flwr|ray|torch|granite-tsfm|transformers|peft|numpy|pandas|scipy|scikit-learn|matplotlib|burstguard) ' | sed 's/^/  /'
 else
-  echo "venv: CHƯA CÓ (.venv/bin/python không tồn tại)"
+  echo "venv: MISSING (.venv/bin/python not found)"
 fi
+OTHER=$(ls -d "$HOME"/burstguard* 2>/dev/null | grep -v -- "-shared" | grep -v "^$ROOT$" | tr '\n' ' ')
+[ -n "$OTHER" ] && echo "other checkouts on this machine: $OTHER"
+echo "shared data: raw_files=$(ls "$SHARED/data/raw/milan" 2>/dev/null | grep -c sms-call) processed=$(ls "$SHARED/data/processed" 2>/dev/null | tr '\n' ' ')"
 
-sec "CÀI ĐẶT GẦN NHẤT"
+sec "LATEST SETUP"
 SL="$(ls -1t logs/setup_*.log 2>/dev/null | head -n1)"
 if [ -n "$SL" ]; then
-  echo "file=$SL"; cat "${SL%.log}.status" 2>/dev/null || echo "status=(không có — có thể bị ngắt giữa chừng)"
-  if [ "$MODE" = "setup" ] || ! grep -q success "${SL%.log}.status" 2>/dev/null; then clip "$SL" 120 | strip; else echo "(cài đặt thành công — bỏ qua chi tiết)"; fi
-else echo "(chưa chạy scripts/setup_venv.sh)"; fi
+  echo "file=$SL"; cat "${SL%.log}.status" 2>/dev/null || echo "status=(none - interrupted?)"
+  if [ "$MODE" = "setup" ] || ! grep -q "status=success" "${SL%.log}.status" 2>/dev/null; then clip "$SL" 120 | strip
+  else echo "(setup succeeded - details omitted)"; fi
+else echo "(scripts/setup_venv.sh has not been run)"; fi
 
 for R in "${RUNS[@]:-}"; do
-  [ -n "$R" ] || continue
-  R="${R%/}"
+  [ -n "$R" ] || continue; R="${R%/}"
   sec "RUN $(basename "$R")"
-  if [ ! -d "$R" ]; then echo "(không tồn tại: $R)"; continue; fi
-  echo "-- lệnh:"; cat "$R/command.txt" 2>/dev/null
-  echo "-- summary.json:"; { cat "$R/summary.json" && echo; } 2>/dev/null || echo "(chưa có summary.json — tiến trình có thể bị kill, ví dụ hết RAM/OOM)"
-  if [ -f "$R/error.txt" ]; then
-    EL=$(wc -l < "$R/error.txt")
-    echo "-- error.txt ($EL dòng; 15 đầu + 70 cuối):"
+  [ -d "$R" ] || { echo "(missing: $R)"; continue; }
+  echo "-- command:"; cat "$R/command.txt" 2>/dev/null
+  echo "-- summary.json:"; { cat "$R/summary.json" && echo; } 2>/dev/null || echo "(no summary.json - process killed? e.g. out of memory)"
+  if [ -f "$R/error.txt" ]; then EL=$(wc -l < "$R/error.txt")
+    echo "-- error.txt ($EL lines; first 15 + last 70):"
     if [ "$EL" -gt 90 ]; then head -n 15 "$R/error.txt"; echo "   [...]"; tail -n 70 "$R/error.txt"; else cat "$R/error.txt"; fi
   fi
-  if grep -q '"status": "success"' "$R/summary.json" 2>/dev/null; then OKRUN=1; else OKRUN=0; fi
-  if [ "$OKRUN" = 0 ]; then
-    echo "-- dòng nghi lỗi trong console.log (tối đa 60):"
-    grep -nEi 'traceback|error|exception|lỗi|fail|killed|oom|out of memory|raylet|segmentation' "$R/console.log" 2>/dev/null | strip | grep -v 'RUN OK' | head -n 60
-    echo "-- console.log (cuối):"; clip "$R/console.log" 80 | strip
+  if grep -q '"status": "success"' "$R/summary.json" 2>/dev/null; then
+    echo "-- console.log (success - last 30 lines):"; clip "$R/console.log" 30 | strip
   else
-    echo "-- console.log (thành công — 25 dòng cuối):"; clip "$R/console.log" 25 | strip
+    echo "-- suspicious lines in console.log (max 60):"
+    grep -nEi 'traceback|error|exception|fail|killed|oom|out of memory|raylet|segmentation' "$R/console.log" 2>/dev/null | strip | grep -v 'RUN OK' | head -n 60
+    echo "-- console.log (last 80 lines):"; clip "$R/console.log" 80 | strip
   fi
-  for m in "$R/metrics.jsonl" "$R"/fl_*/metrics.jsonl; do
+  for m in "$R/metrics.jsonl" "$R"/run*/metrics.jsonl "$R"/engine_*/metrics.jsonl; do
     [ -f "$m" ] || continue
-    echo "-- $(basename "$(dirname "$m")")/metrics.jsonl (6 dòng cuối, cắt 400 ký tự):"; tail -n 6 "$m" | cut -c1-400
+    echo "-- $(basename "$(dirname "$m")")/metrics.jsonl (last 4 lines, cut to 400 chars):"; tail -n 4 "$m" | cut -c1-400
   done
-  for j in "$R"/smoke_report.json "$R"/doctor.json; do [ -f "$j" ] && { echo "-- $(basename "$j"):"; head -c 6000 "$j"; echo; }; done
+  for j in "$R"/smoke_report.json "$R"/doctor.json "$R"/grid_status.json "$R"/equivalence.json; do
+    [ -f "$j" ] && { echo "-- $(basename "$j"):"; head -c 5000 "$j"; echo; }
+  done
 done
+
+for GD in $( [ -n "$GRID" ] && ls -d results/v*/"$GRID"* 2>/dev/null ); do
+  sec "GRID $GD"
+  T=$(ls -d "$GD"/*/ 2>/dev/null | grep -vc _analysis)
+  OK=$(grep -l '"status": "success"' "$GD"/*/result.json 2>/dev/null | wc -l)
+  FL=$(grep -l '"status": "failed"' "$GD"/*/result.json 2>/dev/null | wc -l)
+  RUNNING=$(ls "$GD"/*/started 2>/dev/null | wc -l)
+  echo "job dirs=$T success=$OK failed=$FL running/interrupted=$RUNNING"
+  for f in $(grep -l '"status": "failed"' "$GD"/*/result.json 2>/dev/null | head -n 5); do
+    echo "-- failed job $(dirname "$f"):"; python3 - "$f" <<'PY' 2>/dev/null || head -c 3000 "$f"
+import json, sys
+r = json.load(open(sys.argv[1])); print(r.get("label"), "|", r.get("error_type"), ":", r.get("error", "")[:600])
+print("\n".join(r.get("traceback", "").splitlines()[-30:]))
+PY
+  done
+  if [ -f "$GD/_analysis/summary.md" ]; then
+    echo "-- _analysis/summary.md (from 'burstguard analyze'; first 120 lines):"; head -n 120 "$GD/_analysis/summary.md"
+    [ -f "$GD/_analysis/tests.csv" ] && { echo "-- _analysis/tests.csv (first 60 lines):"; head -n 60 "$GD/_analysis/tests.csv"; }
+  else
+    echo "(no _analysis yet - run: burstguard analyze experiments/$(basename "$GD" | sed 's/_quick$//').toml$( [[ "$GD" == *_quick ]] && echo ' --quick'))"
+  fi
+done
+if [ -n "$GRID" ]; then
+  RG="$(ls -1t logs/run_grids_v*.log 2>/dev/null | head -n1)"
+  [ -n "$RG" ] && { sec "run_grids log $RG (START/END lines + last 20 lines)"; grep -E 'START|END|ALL GRIDS|failed jobs' "$RG" | tail -n 30; tail -n 20 "$RG" | strip; }
+fi
 
 RL="/tmp/ray/session_latest/logs"
 if [ -d "$RL" ]; then
-  sec "RAY (session_latest) — lỗi worker"
+  sec "RAY (session_latest) worker errors"
   ls -1t "$RL"/*.err 2>/dev/null | head -n 6 | while read -r f; do
     if [ -s "$f" ] && grep -qEi 'error|traceback|exception' "$f"; then echo "-- $(basename "$f")"; tail -n 25 "$f" | strip; fi
   done
-  grep -hEi 'oom|out of memory|killed' "$RL"/raylet.* 2>/dev/null | tail -n 10
 fi
-echo; echo "################ HẾT BÁO CÁO"
+echo; echo "################ END OF REPORT v$VER"
 } > "$TXT" 2>&1
 
-# ---- gói tar.gz đầy đủ
 cp "$TXT" "$PKG/"
-for R in "${RUNS[@]:-}"; do
-  [ -n "$R" ] && [ -d "$R" ] || continue
-  mkdir -p "$PKG/runs"; rsync -a --max-size=20m "$R" "$PKG/runs/" 2>/dev/null || cp -r "$R" "$PKG/runs/"
-done
-ls -1t logs/setup_*.log logs/setup_*.status logs/pip_freeze_*.txt 2>/dev/null | head -n 3 | xargs -r -I{} cp {} "$PKG/" 2>/dev/null
-[ -d "$RL" ] && { mkdir -p "$PKG/ray_logs"; find "$RL" -maxdepth 1 -type f \( -name '*.err' -o -name 'raylet.*' -o -name 'gcs_server.*' \) -size -5M -exec cp {} "$PKG/ray_logs/" \; 2>/dev/null; }
+for R in "${RUNS[@]:-}"; do [ -n "$R" ] && [ -d "$R" ] || continue
+  mkdir -p "$PKG/runs"; rsync -a --max-size=20m "$R" "$PKG/runs/" 2>/dev/null || cp -r "$R" "$PKG/runs/"; done
+ls -1t logs/setup_* logs/pip_freeze_* 2>/dev/null | head -n 3 | xargs -r -I{} cp {} "$PKG/" 2>/dev/null
+if [ -n "$GRID" ]; then for f in $(grep -l '"status": "failed"' results/v*/"$GRID"*/*/result.json 2>/dev/null | head -n 10); do
+  d="$(dirname "$f")"; mkdir -p "$PKG/grid_failed/$(basename "$d")"; cp "$d"/result.json "$d"/job.log "$d"/config.toml "$PKG/grid_failed/$(basename "$d")/" 2>/dev/null; done
+  for GD in $(ls -d results/v*/"$GRID"* 2>/dev/null); do
+    [ -d "$GD/_analysis" ] && { mkdir -p "$PKG/analysis/$(basename "$GD")"; cp -r "$GD/_analysis/." "$PKG/analysis/$(basename "$GD")/"; }
+    # compact per-job results (no per-round metrics) so the analysis can be re-run offline
+    mkdir -p "$PKG/results/$(basename "$GD")"
+    for rj in "$GD"/*/result.json; do [ -f "$rj" ] || continue
+      jd="$(dirname "$rj")"; jo="$PKG/results/$(basename "$GD")/$(basename "$jd")"; mkdir -p "$jo"
+      cp "$rj" "$jo/result.json"
+      [ -f "$jd/metrics.jsonl" ] && grep '"kind": "eval"' "$jd/metrics.jsonl" > "$jo/metrics.jsonl" 2>/dev/null
+    done
+  done; fi
+[ -d "$RL" ] && { mkdir -p "$PKG/ray_logs"; find "$RL" -maxdepth 1 -type f \( -name '*.err' -o -name 'raylet.*' \) -size -5M -exec cp {} "$PKG/ray_logs/" \; 2>/dev/null; }
 tar -czf "${BASE}.tar.gz" -C "$TMP" "$(basename "$PKG")" 2>/dev/null
 rm -rf "$TMP"
 
 LINES=$(wc -l < "$TXT")
-if [ "$LINES" -le 400 ]; then cat "$TXT"; else head -n 200 "$TXT"; echo "... (rút gọn, xem đủ trong $TXT)"; tail -n 150 "$TXT"; fi
+if [ "$LINES" -le 400 ]; then cat "$TXT"; else head -n 200 "$TXT"; echo "... (truncated, see $TXT)"; tail -n 150 "$TXT"; fi
 echo
-echo "==> Báo cáo văn bản : $TXT  ($LINES dòng)  <- dán nội dung hoặc đính kèm file này"
-echo "==> Gói đầy đủ      : ${BASE}.tar.gz ($(du -h "${BASE}.tar.gz" | cut -f1))"
+echo "==> text report : $TXT  ($LINES lines)  <- paste or attach this file"
+echo "==> full bundle : ${BASE}.tar.gz ($(du -h "${BASE}.tar.gz" | cut -f1))"

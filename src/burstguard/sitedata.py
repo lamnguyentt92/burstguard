@@ -1,4 +1,4 @@
-"""Truy cập cửa sổ dữ liệu theo site + đánh giá trên các split (dùng chung cho baseline, FL và kiểm thử)."""
+"""Per-site windows and the evaluator used by baselines, engines and tests."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -8,6 +8,7 @@ import numpy as np
 
 from burstguard import metrics as MT
 from burstguard import model as M
+from burstguard.attacks.trigger import apply_trigger
 from burstguard.data.store import Dataset, load_dataset
 from burstguard.data.windows import make_windows, seasonal_naive
 from burstguard.paths import resolve
@@ -22,43 +23,77 @@ def dataset_from_cfg(cfg: dict[str, Any]) -> Dataset:
     ds = _cached_dataset(str(resolve(cfg["data"]["path"])))
     n = int(cfg["data"]["num_sites"])
     if n > ds.num_sites:
-        raise ValueError(f"data.num_sites={n} nhưng file chỉ có {ds.num_sites} site")
+        raise ValueError(f"data.num_sites={n} but the dataset has only {ds.num_sites} sites")
     return ds
 
 
-def site_windows(ds: Dataset, i: int, split: str, cfg: dict[str, Any], seed: int = 0):
+def site_windows(ds: Dataset, i: int, split: str, cfg: dict[str, Any], seed: int = 0, series=None):
     d = cfg["data"]
     a, b = ds.bounds[split]
     is_train = split == "train"
     stride = d["train_stride"] if is_train else d["eval_stride"]
     max_n = d["max_train_windows"] if is_train else d["max_eval_windows"]
     rng = np.random.default_rng(1000 * seed + i)
-    return make_windows(ds.series[i], a, b, int(d["context"]), int(d["horizon"]), int(stride), int(max_n), rng)
+    x = ds.series[i] if series is None else series
+    return make_windows(x, a, b, int(d["context"]), int(d["horizon"]), int(stride), int(max_n), rng)
 
 
-def evaluate(model, ds: Dataset, cfg: dict[str, Any], split: str, sites: list[int] | None = None) -> dict[str, Any]:
-    """Đánh giá mô hình trên từng site: MAE, MASE theo ngày/tuần, sMAPE. Trả về chi tiết + trung bình."""
-    sites = list(range(int(cfg["data"]["num_sites"]))) if sites is None else sites
-    H = int(cfg["data"]["horizon"])
-    rows = []
-    for i in sites:
-        X, Y, t0 = site_windows(ds, i, split, cfg)
-        if len(X) == 0:
-            continue
-        P = M.predict(model, X, freq=cfg["model"]["freq"])
-        nd = seasonal_naive(ds.series[i], t0, H, MT.DAILY_LAG)
-        row = {"site": i, "n": int(len(X)), "mae": MT.mae(P, Y), "mase_daily": MT.mase(P, Y, nd),
-               "smape": MT.smape(P, Y), "naive_daily_mae": MT.mae(nd, Y)}
-        if (t0 >= MT.WEEKLY_LAG).all():
-            nw = seasonal_naive(ds.series[i], t0, H, MT.WEEKLY_LAG)
-            row["mase_weekly"] = MT.mase(P, Y, nw)
-        rows.append(row)
-    if not rows:
-        raise RuntimeError(f"Split '{split}' không có cửa sổ nào — kiểm tra data.context/horizon và ranh giới split")
-    out = {"split": split, "sites": rows}
-    for k in ("mae", "mase_daily", "mase_weekly", "smape"):
-        vals = [r[k] for r in rows if k in r and np.isfinite(r[k])]
-        if vals:
-            out[f"{k}_mean"] = float(np.mean(vals))
-            out[f"{k}_median"] = float(np.median(vals))
-    return out
+def probe_windows(ds: Dataset, cfg: dict[str, Any]):
+    """Server-side public windows (train split of the probe areas) with per-window scale."""
+    Xs, Ys, S = [], [], []
+    for j in range(ds.probe.shape[0]):
+        X, Y, _ = site_windows(ds, 10_000 + j, "train", cfg, series=ds.probe[j])
+        Xs.append(X); Ys.append(Y); S.append(np.full(len(X), ds.probe_scale(j), np.float32))
+    return np.concatenate(Xs), np.concatenate(Ys), np.concatenate(S)
+
+
+class Evaluator:
+    """Clean and backdoor metrics on the benign sites; windows and naive baselines are precomputed."""
+
+    def __init__(self, ds: Dataset, cfg: dict[str, Any], sites: list[int], splits: list[str]):
+        self.cfg, self.sites = cfg, list(sites)
+        H = int(cfg["data"]["horizon"])
+        self.data: dict[str, list[dict]] = {}
+        for sp in splits:
+            a, b = ds.bounds.get(sp, [0, 0])
+            if b <= a:
+                continue
+            rows = []
+            for i in self.sites:
+                X, Y, t0 = site_windows(ds, i, sp, cfg)
+                if not len(X):
+                    continue
+                r = {"site": i, "X": X, "Y": Y, "naive": seasonal_naive(ds.series[i], t0, H, MT.DAILY_LAG),
+                     "Xt": apply_trigger(X, ds.site_scale(i), cfg["trigger"])}
+                if (t0 >= MT.WEEKLY_LAG).all():
+                    r["naive_w"] = seasonal_naive(ds.series[i], t0, H, MT.WEEKLY_LAG)
+                rows.append(r)
+            if rows:
+                self.data[sp] = rows
+
+    def evaluate(self, model, split: str, backdoor: bool = True) -> dict[str, Any]:
+        if split not in self.data:
+            raise RuntimeError(f"split {split!r} has no windows - check data.context/horizon and split bounds")
+        tc, freq = self.cfg["trigger"], self.cfg["model"]["freq"]
+        per = []
+        for r in self.data[split]:
+            P = M.predict(model, r["X"], freq=freq)
+            row = {"site": r["site"], "n": int(len(r["X"])), "mae": MT.mae(P, r["Y"]),
+                   "mase_daily": MT.mase(P, r["Y"], r["naive"]), "smape": MT.smape(P, r["Y"]),
+                   "upr_clean": MT.upr(P, r["Y"], float(tc["under_ratio"]))}
+            if "naive_w" in r:
+                row["mase_weekly"] = MT.mase(P, r["Y"], r["naive_w"])
+            if backdoor:
+                Pt = M.predict(model, r["Xt"], freq=freq)
+                rho, tau = float(tc["target_ratio"]), float(tc["tau"])
+                row.update(asr=MT.asr(Pt, r["Y"], rho, tau), asr_strict=MT.asr(Pt, r["Y"], rho, tau / 2),
+                           te=MT.target_error(Pt, r["Y"], rho), ae=MT.attack_effect(P, Pt),
+                           upr_trig=MT.upr(Pt, r["Y"], float(tc["under_ratio"])))
+            per.append(row)
+        out: dict[str, Any] = {"split": split, "sites": per}
+        for k in ("mae", "mase_daily", "mase_weekly", "smape", "upr_clean", "asr", "asr_strict", "te", "ae", "upr_trig"):
+            vals = [x[k] for x in per if k in x and np.isfinite(x[k])]
+            if vals:
+                out[f"{k}_mean"] = float(np.mean(vals))
+                out[f"{k}_median"] = float(np.median(vals))
+        return out

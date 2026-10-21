@@ -1,0 +1,17 @@
+# E1 - accuracy without attacks (RQ1 baseline): federated fine-tuning in 4 modes vs. local-only and centralised
+# fine-tuning, plus TTM zero-shot. Seasonal-naive MASE = 1 by definition.
+[grid]
+name = "E1_clean"
+base_config = "configs/base.toml"
+seeds = [0, 1, 2]
+
+[factors]
+"train.peft" = ["head", "decoder", "lora", "full"]
+"job.kind" = ["fl", "local_only", "centralized"]
+
+[[include]]
+"job.kind" = "zeroshot"
+
+[analysis]
+split = "test"
+reference = { "job.kind" = "centralized" }

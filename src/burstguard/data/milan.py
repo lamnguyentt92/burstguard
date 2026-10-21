@@ -1,12 +1,12 @@
-"""Đọc dữ liệu Telecom Italia Big Data Challenge — Milan (Barlacchi et al., Scientific Data 2015, ODbL).
+"""Reader for the Telecom Italia Big Data Challenge - Milan (Barlacchi et al., Scientific Data 2015, ODbL).
 
-Định dạng file gốc (một file/ngày, ví dụ `sms-call-internet-mi-2013-11-01.txt`), phân tách TAB, không header:
+Raw format (one file per day, e.g. `sms-call-internet-mi-2013-11-01.txt`), TAB separated, no header:
     square_id, time_interval(ms epoch UTC), country_code, smsin, smsout, callin, callout, internet
-Ô trống = không có hoạt động. Một (square, time) có nhiều dòng (mỗi country_code một dòng) -> cộng lại.
-Một số bản sao trên mạng có header (CellID, datetime, countrycode, ..., internet) và/hoặc phân tách bằng dấu phẩy;
-hàm đọc tự nhận diện các biến thể đó. File có thể ở dạng .txt, .csv, .gz, .zip.
+Empty field = no activity. A (square, time) pair has one row per country_code -> rows are summed.
+Some mirrors add a header (CellID, datetime, countrycode, ..., internet) and/or use commas; both are detected.
+Files may be .txt, .csv, .gz or .zip.
 
-Lưới Milan 100x100 ô (~235 m), ID 1..10000, giả định đánh số theo hàng: id-1 = row*100 + col.
+Milan grid: 100x100 squares (~235 m), IDs 1..10000, assumed row-major: id-1 = row*100 + col.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import pandas as pd
 from burstguard.data.store import FREQ_MIN, SLOTS_PER_DAY, split_bounds
 
 GRID = 100
-# 2013-11-01 00:00 giờ Milan (CET = UTC+1) = 2013-10-31 23:00 UTC
+# 2013-11-01 00:00 Milan time (CET = UTC+1) = 2013-10-31 23:00 UTC
 T0_MS = 1383260400000
 SLOT_MS = FREQ_MIN * 60 * 1000
 DAYS_DEFAULT = 62
@@ -52,13 +52,13 @@ def _open_text(path: Path) -> io.TextIOBase | str:
         zf = zipfile.ZipFile(path)
         members = [n for n in zf.namelist() if not n.endswith("/")]
         if not members:
-            raise ValueError(f"File zip rỗng: {path}")
+            raise ValueError(f"empty zip file: {path}")
         return io.TextIOWrapper(zf.open(members[0]), encoding="utf-8", errors="replace")
-    return str(path)  # pandas tự giải nén .gz/.bz2/.xz theo đuôi file
+    return str(path)  # pandas decompresses .gz/.bz2/.xz by extension
 
 
 def _sniff(path: Path) -> tuple[str, bool]:
-    """Trả về (delimiter, has_header)."""
+    """Return (delimiter, has_header)."""
     src = _open_text(path)
     if isinstance(src, str):
         import gzip, bz2, lzma
@@ -75,7 +75,7 @@ def _sniff(path: Path) -> tuple[str, bool]:
 
 
 def read_day(path: str | Path, squares: set[int] | None = None) -> pd.DataFrame:
-    """Đọc một file ngày -> DataFrame [square:int, slot:int, internet:float], đã cộng qua country_code."""
+    """Read one day file -> DataFrame [square:int, slot:int, internet:float], summed over country codes."""
     path = Path(path)
     delim, has_header = _sniff(path)
     src = _open_text(path)
@@ -87,7 +87,7 @@ def read_day(path: str | Path, squares: set[int] | None = None) -> pd.DataFrame:
         for want, aliases in NAME_ALIASES.items():
             hit = [c for c in df.columns if c in aliases]
             if not hit:
-                raise ValueError(f"{path.name}: không tìm thấy cột '{want}' trong header {list(df.columns)}")
+                raise ValueError(f"{path.name}: column '{want}' not found in header {list(df.columns)}")
             pick[want] = hit[0]
         df = df[[pick["square"], pick["time"], pick["internet"]]]
         df.columns = ["square", "time", "internet"]
@@ -101,7 +101,7 @@ def read_day(path: str | Path, squares: set[int] | None = None) -> pd.DataFrame:
     t = df["time"]
     if pd.api.types.is_numeric_dtype(t):
         ms = t.astype(np.int64)
-    else:  # chuỗi thời gian (giờ địa phương) trong một số bản sao
+    else:  # some mirrors store local-time strings
         ts = pd.to_datetime(t)
         if ts.dt.tz is None:
             ts = ts.dt.tz_localize("Europe/Rome")
@@ -113,8 +113,8 @@ def read_day(path: str | Path, squares: set[int] | None = None) -> pd.DataFrame:
 
 def build_square_matrix(files: Iterable[Path], squares: list[int], T: int,
                         log=print) -> tuple[np.ndarray, dict]:
-    """Ghép các file ngày thành ma trận [len(squares), T]. Khe vắng của một ô -> 0 (không hoạt động);
-    khe vắng của MỌI ô (mất dữ liệu) -> nội suy tuyến tính."""
+    """Merge day files into a matrix [len(squares), T]. A slot missing for one square -> 0 (no activity);
+    a slot missing for ALL squares (outage) -> linear interpolation."""
     sq_index = {s: i for i, s in enumerate(squares)}
     M = np.zeros((len(squares), T), dtype=np.float64)
     seen = np.zeros(T, dtype=bool)
@@ -127,7 +127,7 @@ def build_square_matrix(files: Iterable[Path], squares: list[int], T: int,
         cols = df["slot"].to_numpy()
         np.add.at(M, (rows, cols), df["internet"].to_numpy())
         seen[np.unique(cols)] = True
-        log(f"  [{k}/{len(files)}] {f.name}: {len(df):,} bản ghi, {len(np.unique(cols))} khe")
+        log(f"  [{k}/{len(files)}] {f.name}: {len(df):,} records, {len(np.unique(cols))} slots")
     gaps = np.where(~seen)[0]
     if len(gaps) and seen.any():
         idx = np.arange(T)
@@ -139,8 +139,8 @@ def build_square_matrix(files: Iterable[Path], squares: list[int], T: int,
 
 
 def choose_blocks(num_sites: int, num_probe: int, block: int = 5, grid: int = GRID):
-    """Chọn các khối block×block ô không chồng nhau, trải từ trung tâm ra ngoại vi.
-    Site lấy theo các phân vị khoảng cách tới tâm; probe lấy xen kẽ giữa các site (không trùng ô)."""
+    """Pick non-overlapping block x block groups of squares spread from the centre to the periphery.
+    Sites follow quantiles of the distance to the centre; probe blocks are interleaved (no shared squares)."""
     nb = grid // block
     centers = []
     for br in range(nb):
@@ -150,13 +150,13 @@ def choose_blocks(num_sites: int, num_probe: int, block: int = 5, grid: int = GR
             centers.append((d, br, bc))
     centers.sort()
     total = num_sites + num_probe
-    usable = int(len(centers) * 0.8)  # bỏ 20% khối xa nhất (góc lưới, hoạt động rất thấp)
+    usable = int(len(centers) * 0.8)  # drop the 20% farthest blocks (grid corners, very low activity)
     if total > usable:
-        raise ValueError(f"Yêu cầu {total} khối nhưng chỉ có {usable} khối dùng được với block={block}")
-    picks = np.linspace(0, usable - 1, total).round().astype(int).tolist()  # tăng dần, không trùng
+        raise ValueError(f"requested {total} blocks but only {usable} are usable with block={block}")
+    picks = np.linspace(0, usable - 1, total).round().astype(int).tolist()  # increasing, unique
     if num_probe:
         probe_idx = set(np.linspace(1, total - 2, num_probe).round().astype(int).tolist())
-        while len(probe_idx) < num_probe:  # phòng trường hợp làm tròn trùng
+        while len(probe_idx) < num_probe:  # guard against rounding collisions
             probe_idx.add(next(i for i in range(total) if i not in probe_idx))
     else:
         probe_idx = set()
@@ -177,14 +177,14 @@ def prepare(raw_dir: str | Path, num_sites: int = 20, num_probe: int = 8, block:
     files = list_raw_files(raw_dir, "mi")
     if not files:
         raise FileNotFoundError(
-            f"Không tìm thấy file 'sms-call-internet-mi-YYYY-MM-DD.*' trong {raw_dir}. "
-            f"Tải bằng `burstguard data download` hoặc chép file vào thư mục này.")
+            f"no 'sms-call-internet-mi-YYYY-MM-DD.*' files in {raw_dir}. "
+            f"Download with `burstguard data download` or copy the files there.")
     T = days * SLOTS_PER_DAY
     sites, probes = choose_blocks(num_sites, num_probe, block)
     if len(sites) < num_sites or len(probes) < num_probe:
-        raise ValueError("Không chọn đủ khối site/probe — giảm num_sites/num_probe hoặc block.")
+        raise ValueError("could not select enough site/probe blocks - reduce num_sites/num_probe or block")
     all_sq = sorted({s for g in sites + probes for s in g["squares"]})
-    log(f"Đọc {len(files)} file, giữ {len(all_sq)} ô ({num_sites} site + {num_probe} probe, khối {block}x{block})")
+    log(f"Reading {len(files)} files, keeping {len(all_sq)} squares ({num_sites} sites + {num_probe} probe blocks, {block}x{block})")
     M, stats = build_square_matrix(files, all_sq, T, log=log)
     pos = {s: i for i, s in enumerate(all_sq)}
     def agg(groups):
@@ -194,5 +194,5 @@ def prepare(raw_dir: str | Path, num_sites: int = 20, num_probe: int = 8, block:
     meta = {"source": "milan", "freq_min": FREQ_MIN, "start": "2013-11-01T00:00:00+01:00",
             "block": block, "sites": sites, "probes": probes, "raw_stats": stats,
             "dates_covered": [covered[0], covered[-1]], "num_files": len(files),
-            "license": "ODbL — Telecom Italia Big Data Challenge (Barlacchi et al. 2015)"}
+            "license": "ODbL - Telecom Italia Big Data Challenge (Barlacchi et al. 2015)"}
     return series, probe, meta, split_bounds(T)

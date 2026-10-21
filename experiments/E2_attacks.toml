@@ -1,0 +1,13 @@
+# E2 - attack effectiveness without defense (RQ1/RQ2): 2 of 20 sites compromised, FedAvg.
+[grid]
+name = "E2_attacks"
+base_config = "configs/base.toml"
+seeds = [0, 1, 2, 3, 4]
+
+[factors]
+"attack.type" = ["none", "poison", "scale", "constrain_scale"]
+"train.peft" = ["head", "decoder", "lora", "full"]
+
+[analysis]
+split = "test"
+reference = { "attack.type" = "none" }

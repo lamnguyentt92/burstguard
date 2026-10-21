@@ -1,9 +1,8 @@
-"""Tải dữ liệu Milan từ Harvard Dataverse qua Native API (có tiếp tục tải dở và kiểm tra MD5).
+"""Download the Milan data from Harvard Dataverse (Native API) with resume and MD5 verification.
 
-Barlacchi et al. (2015) công bố hai bộ "Telecommunications activity" (Milan và Trentino) với DOI
-10.7910/DVN/EGZHFV và 10.7910/DVN/QLCABU. Lệnh này hỏi cả hai và chỉ giữ các file khớp vùng yêu cầu
-(`-mi-` cho Milan, `-tn-` cho Trentino), nên không phụ thuộc DOI nào ứng với vùng nào.
-Nếu máy không truy cập được Dataverse: tải thủ công trên trình duyệt rồi chép vào data/raw/milan/.
+Barlacchi et al. (2015) published two "Telecommunications activity" datasets (Milan, Trentino) with DOIs
+10.7910/DVN/EGZHFV and 10.7910/DVN/QLCABU. Both are queried and only files of the requested region are kept
+(`-mi-` Milan, `-tn-` Trentino). Without Dataverse access, download in a browser and copy the files manually.
 """
 from __future__ import annotations
 
@@ -17,7 +16,7 @@ from burstguard.data.milan import FILE_RE
 
 SERVER = "https://dataverse.harvard.edu"
 TELECOM_DOIS = ["10.7910/DVN/EGZHFV", "10.7910/DVN/QLCABU"]
-UA = {"User-Agent": "burstguard-research/0.1 (+https://github.com/lamnguyentt92/burstguard)"}
+UA = {"User-Agent": "burstguard-research (+https://github.com/lamnguyentt92/burstguard)"}
 
 
 def list_files(doi: str, timeout: float = 30) -> list[dict]:
@@ -64,7 +63,7 @@ def download_file(fid: int, dest: Path, size: int | None, md5: str | None, tabul
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and size and dest.stat().st_size == size:
         if md5 is None or _md5(dest) == md5:
-            return "skip (đã có)"
+            return "skip (already present)"
     url = f"{SERVER}/api/access/datafile/{fid}"
     params = {"format": "original"} if tabular else {}
     part = dest.with_suffix(dest.suffix + ".part")
@@ -75,7 +74,7 @@ def download_file(fid: int, dest: Path, size: int | None, md5: str | None, tabul
             if have:
                 headers["Range"] = f"bytes={have}-"
             with requests.get(url, params=params, headers=headers, stream=True, timeout=60) as r:
-                if r.status_code == 416:  # đã đủ
+                if r.status_code == 416:  # already complete
                     break
                 r.raise_for_status()
                 mode = "ab" if have and r.status_code == 206 else "wb"
@@ -83,14 +82,14 @@ def download_file(fid: int, dest: Path, size: int | None, md5: str | None, tabul
                     for chunk in r.iter_content(1 << 20):
                         fh.write(chunk)
             break
-        except Exception as e:  # mạng chập chờn -> thử lại
-            log(f"    lỗi tải (lần {attempt}/{retries}): {type(e).__name__}: {e}")
+        except Exception as e:  # flaky network -> retry
+            log(f"    download error (attempt {attempt}/{retries}): {type(e).__name__}: {e}")
             if attempt == retries:
                 raise
             time.sleep(min(30, 2 ** attempt))
     part.replace(dest)
     if md5 and _md5(dest) != md5:
-        raise IOError(f"MD5 không khớp cho {dest.name} — xoá file và tải lại.")
+        raise IOError(f"MD5 mismatch for {dest.name} - delete it and download again")
     return "ok"
 
 
@@ -105,16 +104,16 @@ def download(region: str = "mi", dest: str | Path = "data/raw/milan", date_from:
             listed += [{**f, "doi": doi} for f in fs]
         except Exception as e:
             errors.append(f"{doi}: {type(e).__name__}: {e}")
-            log(f"DOI {doi}: LỖI {type(e).__name__}: {e}")
+            log(f"DOI {doi}: ERROR {type(e).__name__}: {e}")
     if not listed:
-        raise ConnectionError("Không liệt kê được file từ Dataverse: " + " | ".join(errors))
+        raise ConnectionError("could not list Dataverse files: " + " | ".join(errors))
     chosen = select(listed, region, date_from, date_to)
     if not chosen:
         sample = ", ".join(sorted({f["name"] for f in listed})[:10])
-        raise FileNotFoundError(f"Không có file nào khớp vùng '{region}'. Ví dụ tên file thấy được: {sample}")
+        raise FileNotFoundError(f"no file matches region '{region}'. Example names seen: {sample}")
     total = sum(int(f["size"] or 0) for f in chosen)
-    log(f"Chọn {len(chosen)} file vùng '{region}' ({chosen[0]['date']} .. {chosen[-1]['date']}), "
-        f"tổng ~{total / 1e9:.2f} GB -> {dest}")
+    log(f"Selected {len(chosen)} files of region '{region}' ({chosen[0]['date']} .. {chosen[-1]['date']}), "
+        f"total ~{total / 1e9:.2f} GB -> {dest}")
     if dry_run:
         for f in chosen:
             log(f"  {f['date']}  {f['name']}  {int(f['size'] or 0) / 1e6:.1f} MB  id={f['id']}")
@@ -122,7 +121,7 @@ def download(region: str = "mi", dest: str | Path = "data/raw/milan", date_from:
     done = 0
     for k, f in enumerate(chosen, 1):
         if f["restricted"]:
-            raise PermissionError(f"File {f['name']} bị hạn chế truy cập trên Dataverse.")
+            raise PermissionError(f"file {f['name']} is restricted on Dataverse")
         t0 = time.time()
         st = download_file(f["id"], dest / f["name"], f["size"], f["md5"], f["tabular"], log=log)
         done += 1

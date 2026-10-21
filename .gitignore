@@ -1,4 +1,4 @@
-# môi trường & công cụ cục bộ (không commit)
+# local environment & tools (never committed)
 .venv/
 .tools/
 .cache/
@@ -7,10 +7,12 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# dữ liệu & kết quả chạy (lớn, sinh ra trên máy)
+# data & run outputs (large, machine-generated; shared data lives in ~/burstguard-shared)
 data/raw/
 data/processed/
 runs/
+results/
 logs/
 reports/
 *.tar.gz
+*.npz

@@ -1,0 +1,63 @@
+# Base configuration for all paper experiments (Milan data, TTM-R2, 20 sites, FedAvg).
+# Every experiment grid in experiments/ starts from this file and overrides a few keys.
+[run]
+name = "base"
+seed = 0
+
+[data]
+path = "shared:data/processed/milan_d1.npz"   # $BURSTGUARD_SHARED/data/processed/milan_d1.npz
+num_sites = 20
+context = 512          # 3.6 days of 10-minute slots (TTM-R2 512-48-ft-r2.1)
+horizon = 36           # 6 hours
+train_stride = 3
+eval_stride = 6
+
+[model]
+source = "hf"
+path = "ibm-granite/granite-timeseries-ttm-r2"
+revision = "auto"
+
+[train]
+peft = "head"
+lr = 1e-3
+batch_size = 64
+local_epochs = 1
+lora_r = 8
+lora_alpha = 16
+
+[fl]
+rounds = 30
+eval_every = 5
+eval_split = "val"
+final_splits = ["test", "holiday"]
+
+[engine]
+name = "local"
+workers = 0            # auto: min(CPUs - 1, free RAM / 1.4 GiB)
+
+[trigger]
+width = 3              # 30 minutes
+amplitude = 1.0        # x site std
+target_ratio = 0.3
+tau = 0.5
+
+[attack]
+type = "none"
+num_malicious = 2      # 10 % of the sites
+poison_frac = 0.2
+local_epochs = 5
+lr_mult = 3.0
+
+[defense]
+name = "fedavg"
+
+[burstguard]
+mode = "enforce"
+probe_windows = 64
+steps = 20
+restarts = 2
+width_max = 6
+amplitude_max = 2.0
+reference = "both"
+threshold = 0.15
+threshold_anchor = 0.5

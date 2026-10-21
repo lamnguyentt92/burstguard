@@ -1,0 +1,48 @@
+# E9 - BurstGuard design ablation (RQ3). One change at a time from the default configuration, on a clean federation
+# (false positives) and two attacks (detection). Unit-level TPR/FPR/AUC per variant in _analysis/summary.*,
+# ROC curves in _analysis/figures/burstguard_roc.*. Monitor mode keeps the attack unfiltered, so every variant sees
+# the same kind of rounds and the scores are comparable (AUC); enforce-mode effects are in E3/E4/E6.
+#   reference=last / anchor : one reference only (default: both)
+#   steps=0                 : random bursts only, no gradient search (restarts=8 random samples)
+#   steps=5 / 10            : shorter search (default 20)
+#   probe_windows=16 / 32   : fewer server probe windows (default 64)
+#   width_max=3 / amplitude_max=1.0 : smaller search space (default 6 slots, 2 sigma)
+#   both_directions=false   : search only for downward shifts
+[grid]
+name = "E9_ablation"
+base_config = "configs/base.toml"
+seeds = [0, 1, 2]
+
+[fixed]
+"train.peft" = "head"
+"defense.name" = "burstguard"
+"burstguard.mode" = "monitor"
+
+[factors]
+"attack.type" = ["none", "scale", "constrain_scale"]
+
+[[variants]]
+[[variants]]
+"burstguard.reference" = "last"
+[[variants]]
+"burstguard.reference" = "anchor"
+[[variants]]
+"burstguard.steps" = 0
+"burstguard.restarts" = 8
+[[variants]]
+"burstguard.steps" = 5
+[[variants]]
+"burstguard.steps" = 10
+[[variants]]
+"burstguard.probe_windows" = 16
+[[variants]]
+"burstguard.probe_windows" = 32
+[[variants]]
+"burstguard.width_max" = 3
+[[variants]]
+"burstguard.amplitude_max" = 1.0
+[[variants]]
+"burstguard.both_directions" = false
+
+[analysis]
+split = "test"
