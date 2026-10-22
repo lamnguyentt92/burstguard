@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "burstguard"
-version = "0.3.1"
+version = "0.3.2"
 description = "BurstGuard: robustness study of federated fine-tuning of tiny time-series foundation models for cellular traffic forecasting"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

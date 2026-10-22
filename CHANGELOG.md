@@ -3,6 +3,21 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.2] — 2026-10-22
+
+Operations release; experiment code identical to 0.3.0.
+
+### Changed
+- `scripts/cluster.sh` no longer needs tmux: `start` runs each machine's chain of `run_grids.sh` calls with
+  `nohup setsid` (own process group, survives logout), PID in `logs/cluster_<name>.pid`, output in
+  `logs/cluster_<name>.out`; `status` and `stop` use the PID (stop kills the whole process group).
+- New options `--local-only`, `--name NAME` (e.g. E8 on this machine only), `--bg` (detach the command itself).
+
+### Added
+- `cluster.sh collect [GRID ...]`: waits until the grids have no pending/running jobs on any machine (pulls results
+  every `WAIT_MIN`=10 minutes), then runs `analyze all`, `calibrate` (if E0 exists), `plan` and
+  `collect_logs.sh --campaign`. Typically `cluster.sh --bg collect P0_pilot E0_calibration`.
+
 ## [0.3.1] — 2026-10-22
 
 Operations release; experiment code identical to 0.3.0.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run experiment grids one after another for one shard (one VM). Re-running the same command resumes:
-# finished jobs are skipped, failed/interrupted ones are retried. Start it inside tmux so it survives SSH drops.
+# finished jobs are skipped, failed/interrupted ones are retried. To survive SSH drops start it with nohup
+# (nohup bash scripts/run_grids.sh ... > logs/run.out 2>&1 &) or let scripts/cluster.sh start it.
 #
 #   bash scripts/run_grids.sh 2/5 --tier pilot          # P0_pilot (day 1)
 #   bash scripts/run_grids.sh 2/5 --tier calibration    # E0_calibration (day 1)
