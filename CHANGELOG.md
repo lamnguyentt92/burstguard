@@ -3,6 +3,18 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.1] — 2026-10-22
+
+Operations release; experiment code identical to 0.3.0.
+
+### Added
+- `scripts/cluster.sh` to drive all VMs from one machine over ssh, hosts listed in `$BURSTGUARD_SHARED/cluster.hosts`:
+  `keys` (ssh key + ssh-copy-id, or a one-line manual fallback), `check` (reachability, git/python3/tmux/rsync/curl,
+  CPU/RAM/disk, data/venv), `push-data` (milan_d1.npz + model cache), `install` (clone release branch + setup, in
+  parallel), `smoke`, `start "<run_grids args>" ...` (detached tmux session `bg`, shard k/N per machine, this machine
+  = shard 1), `status`, `stop`.
+- `sync_results.sh` reads the same hosts file when called without arguments; failures are now reported (pipefail).
+
 ## [0.3.0] — 2026-10-22
 
 Campaign release: everything needed to produce the paper's numbers in 7 days on 5 VMs. Algorithms unchanged.
