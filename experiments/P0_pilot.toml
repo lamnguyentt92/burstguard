@@ -1,9 +1,9 @@
-# P0 - pilot on the real data (run FIRST, ~2 h on the 5 VMs) with the v0.3.4 defaults (20 rounds, strong attacker:
-# poison_frac 0.5 / 10 local epochs, cheap BurstGuard search: 8 steps, 1 restart, 32 probe windows).
-# Questions: does the backdoor take hold with head-only and LoRA fine-tuning, does the norm-bounded attack
-# (constrain_scale, bound = benign norm, or 3x with norm_mult = 3) implant, how well do the cheap BurstGuard scores
-# separate clean from attacked rounds, and how long does a round take (for `burstguard plan`).
+# P0 - pilot on the real data (run FIRST, ~1-2 h on the 5 VMs) with the v0.3.5 defaults (20 rounds, attacker
+# poison_frac 0.2 / 5 local epochs, cheap BurstGuard search: 8 steps, 1 restart, 32 probe windows, 1 thread).
+# Questions: BurstGuard scores and timing with the cheap search; how strong and how stealthy is the covert attacker
+# (scale with boost 3 or 5 instead of n/m = 10, i.e. partial instead of full model replacement).
 # Monitor mode: BurstGuard scores every round but never rejects (= FedAvg), so the attack is unfiltered.
+# (P0 of v0.3.2 already showed: plain poisoning and norm-bounded constrain_scale do not implant.)
 [grid]
 name = "P0_pilot"
 base_config = "configs/base.toml"
@@ -15,16 +15,24 @@ seeds = [0]
 
 [factors]
 "train.peft" = ["head", "lora"]
-"attack.type" = ["none", "scale", "constrain_scale"]
+"attack.type" = ["none", "scale"]
 
 [[include]]
 "train.peft" = "head"
-"attack.type" = "constrain_scale"
-"attack.norm_mult" = 3.0
+"attack.type" = "scale"
+"attack.boost" = 3.0
 [[include]]
 "train.peft" = "lora"
-"attack.type" = "constrain_scale"
-"attack.norm_mult" = 3.0
+"attack.type" = "scale"
+"attack.boost" = 3.0
+[[include]]
+"train.peft" = "head"
+"attack.type" = "scale"
+"attack.boost" = 5.0
+[[include]]
+"train.peft" = "lora"
+"attack.type" = "scale"
+"attack.boost" = 5.0
 
 [analysis]
 split = "test"

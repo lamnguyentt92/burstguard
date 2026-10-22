@@ -272,20 +272,25 @@ def test_rule_replay_from_monitor_run(tmp_path):
 
 def test_plan_cost_model():
     from burstguard.experiments import plan as PL
-    fin = [{"peft": "head", "kind": "fl", "rounds": 30, "bg": False, "units": 1, "engine": "local", "wall_s": 300.0},
-           {"peft": "head", "kind": "fl", "rounds": 30, "bg": True, "units": 1, "engine": "local", "wall_s": 900.0},
-           {"peft": "lora", "kind": "fl", "rounds": 20, "bg": False, "units": 1, "engine": "local", "wall_s": 800.0}]
+    base = {"kind": "fl", "rounds": 20, "units": 1, "effort": 0.0, "engine": "local", "attacked": False}
+    fin = [{**base, "peft": "head", "bg": False, "wall_s": 200.0, "clients_wall_s": 2.0, "workers": 4},
+           {**base, "peft": "head", "bg": True, "effort": 1.0, "wall_s": 400.0, "clients_wall_s": 2.0, "workers": 2},
+           {**base, "peft": "lora", "bg": False, "wall_s": 1600.0, "clients_wall_s": 70.0, "workers": 4}]
     m = PL.fit(fin)
-    assert m["c"][("head", "fl")] == 10.0 and m["s_bg"] == 20.0 and m["attack_src"] == "prior"
-    assert PL.cost_per_round(m, "decoder", "fl") == pytest.approx(40.0 * 0.7)   # derived from LoRA via ratios
-    s = PL.job_seconds(m, {"train.peft": "head", "fl.rounds": 30, "defense.name": "burstguard",
-                           "secagg.enabled": True, "secagg.groups": 5}, "fl")
-    assert s == pytest.approx(30 * (10 + 20 * 5))
-    # attacked jobs: straggler factor measured from attacked runs without BurstGuard
-    fin.append({"peft": "head", "kind": "fl", "rounds": 20, "bg": False, "units": 1, "engine": "local",
-                "wall_s": 500.0, "attacked": True})
+    assert m["c"]["head"] == pytest.approx(1.5)          # median of 2*4/4 and 2*2/4 (client part with 4 workers)
+    assert m["s0"]["head"] == pytest.approx(8.0)         # 200/20 - 2
+    assert m["s_bg"] == pytest.approx(10.0)              # 400/20 - 2 - 8, one unit at the default effort
+    assert PL.client_round(m, "decoder") == pytest.approx(70.0 * 0.5)    # derived from LoRA via ratios
+    assert m["attack_src"] == "prior"
+    fin.append({**base, "peft": "head", "bg": False, "attacked": True, "wall_s": 220.0, "clients_wall_s": 3.0,
+                "workers": 4})
     m = PL.fit(fin)
-    assert m["attack"] == pytest.approx(2.5) and m["attack_src"].startswith("measured")
+    assert m["attack"] == pytest.approx(2.0) and m["attack_src"].startswith("measured")
+    ov = {"train.peft": "head", "fl.rounds": 30, "defense.name": "burstguard", "secagg.enabled": True,
+          "secagg.groups": 5}
+    srv, cli = PL.job_parts(m, ov, "fl")
+    assert srv == pytest.approx(30 * (8 + 10 * 5)) and cli == pytest.approx(30 * 1.5)
+    assert PL.job_seconds(m, ov, "fl", weight=1) == pytest.approx(srv + cli * 4)   # 1 worker: clients 4x slower
     # search effort: 64 probe windows and 20 steps cost more than the default (32 windows, 8 steps)
     f = PL._features({"defense.name": "burstguard", "burstguard.probe_windows": 64, "burstguard.steps": 20,
                       "burstguard.restarts": 2}, "fl")
@@ -294,6 +299,18 @@ def test_plan_cost_model():
     f = PL._features({"defense.name": "burstguard", "attack.type": "scale", "attack.start_round": 6,
                       "attack.end_round": 16, "fl.rounds": 40}, "fl")
     assert f["units"] == pytest.approx(1 + 10 / 40 * 5)
+
+
+def test_server_bound_jobs_spread_over_weak_machines():
+    """Machine-aware assignment: server-bound jobs (head-only, screening) run as fast on a 1-worker machine, so
+    they are spread evenly; client-bound jobs still go mostly to the 4-worker machine."""
+    from burstguard.experiments.grid import assign_weighted
+    srv = [{"id": f"s{i}", "cost": 100.0, "cost_server": 100.0, "cost_client": 0.0} for i in range(8)]
+    cli = [{"id": f"c{i}", "cost": 100.0, "cost_server": 0.0, "cost_client": 100.0} for i in range(10)]
+    a = assign_weighted(srv, [4, 1])
+    assert a.count(0) == a.count(1) == 4
+    b = assign_weighted(cli, [4, 1])
+    assert b.count(0) == 8 and b.count(1) == 2
 
 
 def test_weighted_shards():

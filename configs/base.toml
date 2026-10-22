@@ -44,8 +44,8 @@ tau = 0.5
 [attack]
 type = "none"
 num_malicious = 2      # 10 % of the sites
-poison_frac = 0.5      # v0.3.4: strong attacker by default (P0 v0.3.2: 0.2 / 5 epochs barely implants)
-local_epochs = 10
+poison_frac = 0.2      # v0.3.5: back to 0.2 / 5 epochs (P0 v0.3.2: 0.5 / 10 epochs adds little ASR, doubles the
+local_epochs = 5       #         damage to clean accuracy and makes the malicious clients 2-3x slower)
 lr_mult = 3.0
 
 [defense]
@@ -63,3 +63,4 @@ reference = "both"
 threshold = 0.08          # floor, per-round score vs. last accepted global  (P0 clean <= 0.02; calibrate with E0)
 threshold_anchor = 0.3    # floor, accumulated score vs. pre-trained model   (P0 clean <= 0.08 at round 20)
 anchor_adaptive = true    # anchor threshold follows smooth benign drift (median + mad_k * MAD)
+threads = 1               # v0.3.5: one torch thread (more threads did not speed up screening in P0 v0.3.2)

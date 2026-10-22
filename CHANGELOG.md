@@ -3,7 +3,40 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
-## [0.3.4] — 2026-10-22
+## [0.3.5] — 2026-10-22
+
+Replaces 0.3.4 (never run) after the complete P0 pilot of v0.3.2 (10/10 jobs). New experiment code
+(`EXPERIMENT_CODE = "0.3.5"`).
+
+P0 v0.3.2 (test split, head / LoRA): model replacement with the default attacker (poison_frac 0.2, 5 epochs)
+gives ASR 0.05 / 0.33, UPR on triggered windows 0.63 / 0.94 (clean 0.008) and MASE +45 % / +25 %; the stronger
+attacker (0.5, 10 epochs) adds little ASR (0.08 / 0.41) but doubles the damage (+75 % / +48 %) and makes the malicious
+clients 2-3x slower. constrain_scale (bound = benign norm) does not implant (UPR 0.011 / 0.012, AUC 0.57 / 0.52);
+plain poisoning barely does (UPR 0.11 / 0.20) but is visible in BurstGuard's anchor score (AUC 0.90 / 0.96).
+Head rounds take 86-116 s on every machine (client training 0.16 s, the rest is screening); 3-4 screening threads
+used 3-5x the CPU seconds of 1 thread for the same wall time.
+
+### Changed
+- Attacker defaults back to `attack.poison_frac` 0.2, `attack.local_epochs` 5.
+- Covert attacker = `scale` with `attack.boost = 3` (partial model replacement): replaces constrain_scale in E3 and
+  E9 (factor `attack.boost` = [0, 3]); P0 tests boost 3 and 5; E2 adds boost 3 and 5 for head and LoRA
+  (strength vs. stealth trade-off).
+- `neurotoxin` and `adaptive` are boosted like `scale` (unboosted they behave like plain poisoning, which does not
+  implant); `adaptive` is norm-bounded only with the new `attack.adaptive_constrain = true`.
+- `burstguard.threads` default 1.
+- Shard assignment is machine-aware: a job's time on a machine with weight w (= parallel workers) is
+  server part + client part x 4 / w (greedy LPT); server-bound head-only jobs are spread over the 1-worker machines.
+  Jobs carry `cost_server` / `cost_client`; with costs that scale entirely with the weight the assignment equals 0.3.3.
+- `burstguard plan`: two-part cost model (server seconds per round, client seconds with 4 workers, attack slow-down,
+  BurstGuard seconds per screened unit x search effort), fitted from `wall_s`, `clients_wall_s_mean` and `workers`.
+- Paper: vulnerability table in long format (ASR, UPR_trig, MASE, dMASE per attack and boost); defense and
+  ablation tables compare model replacement (boost 10) with the covert attacker (boost 3); attack keys
+  `scale@3` etc. distinguish the boost.
+
+### Added
+- `result.json`: `clients_wall_s_mean`, `workers`.
+
+## [0.3.4] — 2026-10-22 (superseded by 0.3.5, not run)
 
 Campaign release after the real-data pilot (P0, v0.3.2 on the 5 VMs). New experiment code
 (`EXPERIMENT_CODE = "0.3.4"`): results are not mixed with 0.3.0–0.3.3.

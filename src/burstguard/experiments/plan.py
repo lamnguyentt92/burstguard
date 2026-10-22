@@ -1,18 +1,22 @@
 """Time planning for the experiment campaign: fit a per-round cost model on finished jobs, estimate what is left.
 
-Cost model for one FL job (seconds on a weight-4 machine, i.e. 8 vCPU with 4 workers):
+Two-part cost model for one FL job on a machine with w parallel workers (its shard weight):
 
-    rounds * ( c[peft, kind] * a[attacked] + s_bg * units * effort * [BurstGuard on] )
-
-  c[peft, kind]  median wall_s / rounds of finished clean jobs without BurstGuard (per fine-tuning mode, job kind)
-  a              median slow-down of attacked jobs (malicious clients train attack.local_epochs: stragglers)
-  s_bg           median extra seconds per screened unit and round at the default search effort
-  units          screened units per round: secagg groups, or 1 + (attacked rounds share) * regroup_groups when a
-                 flagged aggregate is re-screened in groups (enforce mode, on_flag = regroup)
-  effort         search effort relative to the default (probe windows x restarts x directions x steps)
-Missing values fall back to measured ratios between modes and finally to priors (P0 pilot of v0.3.2, vm-e);
-the output says which values were measured. Job features come from the resolved configuration ("effective"),
-so keys that only the base config sets (fl.rounds, attack.local_epochs, ...) are taken into account.
+    seconds = rounds * ( S + C * REF_WEIGHT / w )
+    S  server part (machine-independent: the server runs single-threaded): s0[peft] (aggregation, evaluation,
+       process communication) + s_bg * units * effort when BurstGuard screens
+    C  client part with REF_WEIGHT = 4 workers: c[peft] * a (a = slow-down of attacked rounds: malicious clients
+       train attack.local_epochs on extra poisoned windows)
+  units   screened units per round: secagg groups, or 1 + (attacked rounds share) * regroup_groups when a flagged
+          aggregate is re-screened in groups (enforce mode, on_flag = regroup)
+  effort  BurstGuard search effort relative to the default (probe windows x restarts x directions x steps)
+Baselines (local-only, centralised) and zero-shot run in one process: server part only.
+P0 of v0.3.2 showed why two parts: head-only rounds are server-bound (client training 0.16 s, screening ~80 s on
+every machine), LoRA rounds client-bound (12 s per client). Weights (workers) only scale the client part, so
+head-only jobs can go to the 1-worker machines without slowing the campaign.
+Measured values (result.json: wall_s, clients_wall_s_mean, workers) replace the priors; the output says which.
+Job features come from the resolved configuration ("effective"), so keys that only the base config sets
+(fl.rounds, attack.local_epochs, ...) are taken into account.
 """
 from __future__ import annotations
 
@@ -24,12 +28,14 @@ import numpy as np
 
 from burstguard.experiments import grid as G
 
-# priors: seconds per round on an 8-vCPU VM with 4 workers (P0 v0.3.2 on vm-e; replaced by measurements)
-PRIOR_C = {"head": 20.0, "decoder": 45.0, "lora": 65.0, "full": 65.0}
-PRIOR_BG = 12.0             # seconds per screened unit and round at the default search effort (4 threads)
-PRIOR_ATTACK = 2.0          # attacked / clean round time (attack.local_epochs = 10, poison_frac = 0.5)
-RATIO = {"head": 0.3, "decoder": 0.7, "lora": 1.0, "full": 1.0}   # relative to lora
-KIND_FACTOR = {"fl": 1.0, "local_only": 1.0, "centralized": 1.1, "zeroshot": 0.0}
+REF_WEIGHT = 4.0            # client part measured as on a 4-worker machine (vm-e: 8 vCPU, ~8 GB)
+# priors (P0 v0.3.2; replaced by measurements)
+PRIOR_S0 = {"head": 5.0, "decoder": 5.0, "lora": 6.0, "full": 6.0}      # server s/round without screening
+PRIOR_C = {"head": 1.5, "decoder": 30.0, "lora": 60.0, "full": 70.0}     # client s/round with 4 workers
+PRIOR_BG = 9.0              # s per screened unit and round at the default search effort, one thread
+PRIOR_ATTACK = 1.5          # attacked / clean client time per round (poison_frac 0.2, 5 local epochs)
+RATIO_C = {"head": 0.025, "decoder": 0.5, "lora": 1.0, "full": 1.15}    # client cost relative to LoRA
+KIND_FACTOR = {"local_only": 1.0, "centralized": 1.1}   # baselines: one process ~ 4 x the 4-worker client time
 ZEROSHOT_S = 120.0
 DEFAULT_EFFORT = 32 * (1 * 2 * (6 * 8 + 2) + 2)   # probe_windows 32, restarts 1, both directions, 8 steps
 
@@ -72,73 +78,89 @@ def collect_finished(results_root: Path) -> list[dict[str, Any]]:
             r = json.loads(rj.read_text())
         except Exception:
             continue
-        if r.get("status") != "success" or not r.get("wall_s"):
+        if r.get("status") != "success" or not r.get("wall_s") or "_quick" in rj.parent.parent.name:
             continue
         f = _features(r.get("effective") or r.get("overrides", {}), r.get("kind", "fl"))
-        if "_quick" in rj.parent.parent.name:
-            continue
-        out.append({**f, "wall_s": float(r["wall_s"]), "grid": rj.parent.parent.name})
+        out.append({**f, "wall_s": float(r["wall_s"]), "grid": rj.parent.parent.name,
+                    "clients_wall_s": r.get("clients_wall_s_mean"), "workers": r.get("workers")})
     return out
 
 
+def _med(v: list[float]) -> float | None:
+    return float(np.median(v)) if v else None
+
+
 def fit(finished: list[dict[str, Any]]) -> dict[str, Any]:
-    model: dict[str, Any] = {"c": {}, "c_src": {}, "s_bg": PRIOR_BG, "s_bg_src": "prior", "zeroshot": ZEROSHOT_S,
-                             "attack": PRIOR_ATTACK, "attack_src": "prior"}
-    per: dict[tuple, list[float]] = {}
-    for j in finished:
-        if j["kind"] == "zeroshot" or j["bg"] or j["engine"] != "local" or j.get("attacked"):
-            continue
-        per.setdefault((j["peft"], j["kind"]), []).append(j["wall_s"] / max(j["rounds"], 1))
-    for key, v in per.items():
-        model["c"][key] = float(np.median(v)); model["c_src"][key] = f"measured (n={len(v)})"
+    m: dict[str, Any] = {"s0": {}, "c": {}, "base": {}, "src": {}, "s_bg": PRIOR_BG, "s_bg_src": "prior",
+                         "attack": PRIOR_ATTACK, "attack_src": "prior", "zeroshot": ZEROSHOT_S}
+    fl = [j for j in finished if j["kind"] == "fl" and j["engine"] == "local" and j.get("clients_wall_s")
+          and j.get("workers")]
+    for peft in PRIOR_C:
+        clean = [j for j in fl if j["peft"] == peft and not j["attacked"]]
+        c = _med([j["clients_wall_s"] * j["workers"] / REF_WEIGHT for j in clean])
+        s0 = _med([j["wall_s"] / j["rounds"] - j["clients_wall_s"] for j in clean if not j["bg"]])
+        if c is not None:
+            m["c"][peft] = c; m["src"][f"c/{peft}"] = f"measured (n={len(clean)})"
+        if s0 is not None:
+            m["s0"][peft] = max(0.5, s0); m["src"][f"s0/{peft}"] = "measured"
+    att = [j["clients_wall_s"] * j["workers"] / REF_WEIGHT / client_round(m, j["peft"]) for j in fl
+           if j["attacked"] and j["peft"] in m["c"]]
+    if att:
+        m["attack"] = max(1.0, float(np.median(att))); m["attack_src"] = f"measured (n={len(att)})"
+    extra = [(j["wall_s"] / j["rounds"] - j["clients_wall_s"] - server_round(m, j["peft"])) / max(j["units"] * j["effort"], 1e-6)
+             for j in fl if j["bg"]]
+    if extra:
+        m["s_bg"] = max(1.0, float(np.median(extra))); m["s_bg_src"] = f"measured (n={len(extra)})"
+    for kind in KIND_FACTOR:
+        for peft in PRIOR_C:
+            v = [j["wall_s"] / j["rounds"] for j in finished if j["kind"] == kind and j["peft"] == peft]
+            if v:
+                m["base"][(peft, kind)] = float(np.median(v))
     zs = [j["wall_s"] for j in finished if j["kind"] == "zeroshot"]
     if zs:
-        model["zeroshot"] = float(np.median(zs))
-    att = [j["wall_s"] / max(j["rounds"], 1) / cost_per_round(model, j["peft"], j["kind"])
-           for j in finished if j.get("attacked") and not j["bg"] and j["engine"] == "local" and j["kind"] == "fl"
-           and (j["peft"], "fl") in model["c"]]
-    if att:
-        model["attack"] = max(1.0, float(np.median(att))); model["attack_src"] = f"measured (n={len(att)})"
-    extra = []
-    for j in finished:
-        if j["bg"] and j["kind"] == "fl" and j["engine"] == "local":
-            base = cost_per_round(model, j["peft"], "fl") * (model["attack"] if j.get("attacked") else 1.0)
-            extra.append((j["wall_s"] / max(j["rounds"], 1) - base) / max(j["units"] * j.get("effort", 1.0), 1e-6))
-    if extra:
-        model["s_bg"] = max(1.0, float(np.median(extra))); model["s_bg_src"] = f"measured (n={len(extra)})"
-    return model
+        m["zeroshot"] = float(np.median(zs))
+    return m
 
 
-def cost_per_round(model: dict[str, Any], peft: str, kind: str) -> float:
-    c = model["c"]
-    if (peft, kind) in c:
-        return c[(peft, kind)]
-    if (peft, "fl") in c:
-        return c[(peft, "fl")] * KIND_FACTOR.get(kind, 1.0)
-    # scale from a measured mode via the ratios (prefer compute-bound modes: head rounds are dominated by
-    # evaluation overhead and scale poorly)
-    for p2 in ("lora", "full", "decoder", "head"):
-        if (p2, "fl") in c:
-            return c[(p2, "fl")] / RATIO.get(p2, 1.0) * RATIO.get(peft, 1.0) * KIND_FACTOR.get(kind, 1.0)
-    return PRIOR_C.get(peft, 65.0) * KIND_FACTOR.get(kind, 1.0)
+def client_round(m: dict[str, Any], peft: str) -> float:
+    """Client seconds per round with REF_WEIGHT workers (clean)."""
+    c = m["c"]
+    if peft in c:
+        return c[peft]
+    for p2 in ("lora", "full", "decoder", "head"):     # derive from a measured mode
+        if p2 in c:
+            return c[p2] / RATIO_C[p2] * RATIO_C.get(peft, 1.0)
+    return PRIOR_C.get(peft, 60.0)
 
 
-def job_seconds(model: dict[str, Any], ov: dict[str, Any], kind: str) -> float:
+def server_round(m: dict[str, Any], peft: str) -> float:
+    s0 = m["s0"]
+    if peft in s0:
+        return s0[peft]
+    return float(np.median(list(s0.values()))) if s0 else PRIOR_S0.get(peft, 6.0)
+
+
+def job_parts(m: dict[str, Any], ov: dict[str, Any], kind: str) -> tuple[float, float]:
+    """(server seconds, client seconds with REF_WEIGHT workers) of one job."""
     f = _features(ov, kind)
     if kind == "zeroshot":
-        return model["zeroshot"]
-    s = f["rounds"] * cost_per_round(model, f["peft"], kind) * (model["attack"] if f["attacked"] else 1.0)
-    if f["bg"]:
-        s += f["rounds"] * model["s_bg"] * f["units"] * f["effort"]
+        return m["zeroshot"], 0.0
+    if kind in KIND_FACTOR:
+        per = m["base"].get((f["peft"], kind), REF_WEIGHT * client_round(m, f["peft"]) * KIND_FACTOR[kind])
+        return f["rounds"] * per, 0.0
+    srv = f["rounds"] * (server_round(m, f["peft"]) + (m["s_bg"] * f["units"] * f["effort"] if f["bg"] else 0.0))
+    cli = f["rounds"] * client_round(m, f["peft"]) * (m["attack"] if f["attacked"] else 1.0)
     if f["engine"] == "flower":
-        s *= 1.5
-    return s
+        srv, cli = srv * 1.5, cli * 1.5
+    return srv, cli
+
+
+def job_seconds(m: dict[str, Any], ov: dict[str, Any], kind: str, weight: float = REF_WEIGHT) -> float:
+    srv, cli = job_parts(m, ov, kind)
+    return srv + cli * REF_WEIGHT / weight
 
 
 PRIOR_MODEL = fit([])
-
-
-REF_WEIGHT = 4.0   # measured per-round times are taken as those of a weight-4 machine (8 vCPU, ~8 GB: 4 workers)
 
 
 def read_weights_file(path: Path | None = None) -> list[float] | None:
@@ -160,26 +182,26 @@ def plan(grid_files: list[Path], n_shards: int = 5, log=print, weights: list[flo
     from burstguard.paths import RESULTS_DIR
     if weights:
         n_shards = len(weights)
-    speed = [w / REF_WEIGHT for w in weights] if weights else [1.0] * n_shards
+    w = list(weights) if weights else [REF_WEIGHT] * n_shards
     root = RESULTS_DIR / VERSION_TAG
     finished = collect_finished(root) if root.exists() else []
     model = fit(finished)
-    log(f"cost model from {len(finished)} finished jobs in {root}:")
+    log(f"cost model from {len(finished)} finished jobs in {root} (seconds per round; client part with "
+        f"{REF_WEIGHT:g} workers, server part single-threaded):")
     for peft in ("head", "decoder", "lora", "full"):
-        src = model["c_src"].get((peft, "fl"), "derived" if model["c"] else "prior")
-        log(f"  {peft:8s} FL round: {cost_per_round(model, peft, 'fl'):7.1f} s   [{src}]")
-    log(f"  attacked jobs: x{model['attack']:.2f} round time (straggling malicious clients)   [{model['attack_src']}]")
+        log(f"  {peft:8s} server {server_round(model, peft):6.1f} [{model['src'].get(f's0/{peft}', 'prior/derived')}]"
+            f"   clients {client_round(model, peft):6.1f} [{model['src'].get(f'c/{peft}', 'prior/derived')}]")
+    log(f"  attacked rounds: clients x{model['attack']:.2f}   [{model['attack_src']}]")
     log(f"  BurstGuard: {model['s_bg']:.1f} s per screened unit and round   [{model['s_bg_src']}]")
-    out = {"model": {"s_bg": model["s_bg"], "c": {f"{k[0]}/{k[1]}": v for k, v in model["c"].items()}},
+    out = {"model": {"s_bg": model["s_bg"], "attack": model["attack"], "s0": model["s0"], "c": model["c"]},
            "grids": [], "n_shards": n_shards, "weights": weights}
     if weights:
-        log(f"  weighted shards {','.join(f'{w:g}' for w in weights)}: shard wall time = its job time / (weight/"
-            f"{REF_WEIGHT:g}) (assumption: measured round times come from a weight-{REF_WEIGHT:g} machine, "
-            "i.e. 8 vCPU with 4 workers; a weight-1 machine runs ~4x slower)")
+        log(f"  shard weights {','.join(f'{x:g}' for x in weights)} = parallel workers per machine: a job takes "
+            f"server + clients x {REF_WEIGHT:g}/weight on its machine")
     tot_left = 0.0
     shard_left = [0.0] * n_shards
     equal_left = [0.0] * n_shards   # same machines, plain round-robin shards (for comparison)
-    log(f"\n{'grid':18s} {'jobs':>5s} {'done':>5s} {'fail':>5s} {'left_h(1 VM)':>13s} "
+    log(f"\n{'grid':18s} {'jobs':>5s} {'done':>5s} {'fail':>5s} {'left_h(4-worker VM)':>20s} "
         f"{'per-shard h (max of ' + str(n_shards) + ')':>24s}")
     for gf in grid_files:
         g = G.load_grid(gf)
@@ -195,31 +217,30 @@ def plan(grid_files: list[Path], n_shards: int = 5, log=print, weights: list[flo
                     done += 1
                     continue
                 fail += st == "failed"
-                sec = job_seconds(model, j.get("effective", j["overrides"]), j["kind"])
-                left += sec
-                per_shard[k - 1] += sec / speed[k - 1]
+                ov = j.get("effective", j["overrides"])
+                left += job_seconds(model, ov, j["kind"])
+                per_shard[k - 1] += job_seconds(model, ov, j["kind"], w[k - 1])
         if weights:
             for k in range(1, n_shards + 1):
                 for j in G.shard(jobs, k, n_shards):
                     if G.job_status(gdir / j["id"]) != "success":
-                        equal_left[k - 1] += job_seconds(model, j.get("effective", j["overrides"]), j["kind"]) / speed[k - 1]
+                        equal_left[k - 1] += job_seconds(model, j.get("effective", j["overrides"]), j["kind"], w[k - 1])
         for i in range(n_shards):
             shard_left[i] += per_shard[i]
         tot_left += left
         out["grids"].append({"grid": g["grid"]["name"], "jobs": len(jobs), "done": done, "failed": fail,
                              "left_hours_1vm": round(left / 3600, 1),
                              "left_hours_per_shard": [round(x / 3600, 1) for x in per_shard]})
-        log(f"{g['grid']['name']:18s} {len(jobs):5d} {done:5d} {fail:5d} {left / 3600:13.1f} "
+        log(f"{g['grid']['name']:18s} {len(jobs):5d} {done:5d} {fail:5d} {left / 3600:20.1f} "
             f"{max(per_shard) / 3600:24.1f}")
     out["total_left_hours_1vm"] = round(tot_left / 3600, 1)
     out["wall_hours_if_sharded"] = round(max(shard_left) / 3600, 1) if shard_left else 0.0
-    log(f"{'TOTAL':18s} {'':5s} {'':5s} {'':5s} {tot_left / 3600:13.1f} {max(shard_left) / 3600:24.1f}")
+    log(f"{'TOTAL':18s} {'':5s} {'':5s} {'':5s} {tot_left / 3600:20.1f} {max(shard_left) / 3600:24.1f}")
     if weights:
         out["per_shard_wall_hours"] = [round(x / 3600, 1) for x in shard_left]
         out["wall_hours_equal_shards_same_machines"] = round(max(equal_left) / 3600, 1)
         log(f"per-shard wall hours: {', '.join(f'{k + 1}: {x / 3600:.1f}' for k, x in enumerate(shard_left))}")
-        log(f"(equal round-robin shards on the same machines would take ~{max(equal_left) / 3600:.0f} h: "
-            "the slowest machine gets as much work as the fastest)")
+        log(f"(equal round-robin shards on the same machines would take ~{max(equal_left) / 3600:.0f} h)")
     log(f"\n=> about {out['wall_hours_if_sharded']:.0f} h wall time with {n_shards} VMs running these grids in sequence "
         f"(each VM its own {'weighted ' if weights else ''}shard).")
     return out

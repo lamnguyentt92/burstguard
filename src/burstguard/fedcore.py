@@ -94,7 +94,7 @@ class SiteWorker:
         info: dict[str, Any] = {"site": sid, "role": task["role"]}
         benign_norm = None
         at = cfg["attack"]
-        if malicious and at["type"] in ("constrain_scale", "adaptive") and float(at["norm_bound"]) <= 0:
+        if malicious and A.norm_bounded(at) and float(at["norm_bound"]) <= 0:
             M.set_vec(self.model, theta_g)
             local_train(self.model, st["X"], st["Y"], st["scale"], cfg, seed=seed, cache=st["cache"])
             benign_norm = float(np.linalg.norm(M.get_vec(self.model) - theta_g))

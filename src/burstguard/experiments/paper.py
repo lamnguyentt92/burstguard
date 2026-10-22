@@ -23,11 +23,28 @@ DEFENSE_TEX = {"fedavg": "FedAvg", "clip_noise": "Clip+DP", "krum": "Krum", "mul
                "trimmed": "Trimmed mean", "median": "Median", "flame": "FLAME", "fltrust": "FLTrust",
                "probe_screen": "Probe-loss check", "lora_reset": "LoRA reset", "burstguard": "\\textbf{BurstGuard}"}
 PEFT_TEX = {"head": "Head", "decoder": "Decoder", "lora": "LoRA", "full": "Full", None: "--"}
-ATTACK_TEX = {"none": "No attack", "poison": "Data poisoning", "scale": "Model replacement",
+ATTACK_TEX = {"none": "No attack", "poison": "Data poisoning", "scale": "Model replacement ($\\gamma$=10)",
+              "scale@3": "Covert ($\\gamma$=3)", "scale@5": "Boosted ($\\gamma$=5)",
               "constrain_scale": "Norm-constrained", "adaptive": "Adaptive (decoys)", "neurotoxin": "Neurotoxin"}
 KIND_TEX = {"zeroshot": "Zero-shot", "local_only": "Local only", "centralized": "Centralized", "fl": "Federated"}
 PEFTS = ["head", "decoder", "lora", "full"]
-ATTACKS = ["poison", "scale", "constrain_scale"]
+ATTACKS = ["poison", "scale@3", "scale@5", "scale", "constrain_scale"]   # E2 (strength vs. stealth)
+ATTACKS_E3 = ["scale", "scale@3"]                                          # E3 / E9 (model replacement, covert)
+
+
+def akey(r: dict | None) -> str | None:
+    """Attack key of a row: attack.type, plus @boost when a non-default boost is set ("scale@3")."""
+    if not r:
+        return None
+    b = _num(r.get("attack.boost"))
+    return f"{r.get('attack.type')}@{b:g}" if b else r.get("attack.type")
+
+
+def pick_att(rows: list[dict], att: str, **kw) -> dict | None:
+    for r in rows:
+        if akey(r) == att and all(r.get(k.replace("__", ".")) == v for k, v in kw.items()):
+            return r
+    return None
 
 
 # ------------------------------------------------------------------ helpers
@@ -188,31 +205,37 @@ def table_vulnerability(root: Path, tdir: Path, numbers: dict) -> str | None:
     if not t:
         return None
     rows, _ = t
-    e1 = _load(root, "E1_clean")       # v0.3.4: E2 has no clean runs, the clean reference is E1 (FL, FedAvg)
+    e1 = _load(root, "E1_clean")       # since v0.3.4 E2 has no clean runs: the clean reference is E1 (FL, FedAvg)
     e1_rows = e1[0] if e1 else []
     body = []
     numbers["vulnerability"] = {}
     for peft in PEFTS:
         clean = pick(rows, attack__type="none", train__peft=peft) or next(
             (r for r in e1_rows if r.get("job.kind", "fl") == "fl" and r.get("train.peft") == peft), None)
-        if not clean:
+        cells_peft = [(att, pick_att(rows, att, train__peft=peft)) for att in ATTACKS]
+        cells_peft = [(a, r) for a, r in cells_peft if r]
+        if not cells_peft:
             continue
-        cells = [PEFT_TEX[peft], fmt_ci(clean, "mase_daily")]
-        for att in ATTACKS:
-            r = pick(rows, attack__type=att, train__peft=peft)
+        if body:
+            body.append(["--midrule--"])
+        body.append([PEFT_TEX[peft], "No attack", "--", fmt_ci(clean, "upr_trig", 2) if clean else "--",
+                     fmt_ci(clean, "mase_daily") if clean else "--", "--"])
+        for att, r in cells_peft:
             d = None
-            if r and _num(r.get("mase_daily")) and _num(clean.get("mase_daily")):
+            if clean and _num(r.get("mase_daily")) and _num(clean.get("mase_daily")):
                 d = 100 * (r["mase_daily"] / clean["mase_daily"] - 1)
-            cells += [fmt_ci(r, "asr", 2), "--" if d is None else f"{d:+.1f}"]
-            numbers["vulnerability"][f"{peft}/{att}"] = {"asr": _num((r or {}).get("asr")), "dmase_pct": d}
-        body.append(cells)
+            body.append(["", ATTACK_TEX.get(att, att), fmt_ci(r, "asr", 2), fmt_ci(r, "upr_trig", 2),
+                         fmt_ci(r, "mase_daily"), "--" if d is None else f"{d:+.1f}"])
+            numbers["vulnerability"][f"{peft}/{att}"] = {"asr": _num(r.get("asr")), "upr_trig": _num(r.get("upr_trig")),
+                                                         "mase": _num(r.get("mase_daily")), "dmase_pct": d}
     cap = ("Vulnerability of federated fine-tuning to burst-triggered backdoors (2 of 20 sites malicious, FedAvg): "
            "attack success rate on triggered test windows of benign sites (ASR, forecast within 50\\% of the "
-           "attacker's target) and relative change of clean MASE ($\\Delta$\\%) against the clean federation.")
-    groups = [(2, "")] + [(2, ATTACK_TEX[a]) for a in ATTACKS]
-    hdr = ["Tuned", "Clean MASE"] + ["ASR", "$\\Delta$MASE\\%"] * len(ATTACKS)
-    (tdir / "vulnerability.tex").write_text(_tabular("lr" + "rr" * len(ATTACKS), hdr, body, cap,
-                                                     "tab:vulnerability", groups))
+           "attacker's target), under-provisioning rate on triggered windows (UPR$_{trig}$, forecast below 80\\% of "
+           "the truth), clean MASE and its relative change against the clean federation ($\\Delta$\\%). "
+           "$\\gamma$ = update boost of the malicious sites ($\\gamma$=1: plain poisoning, $\\gamma$=10 = $n/m$: "
+           "model replacement).")
+    hdr = ["Tuned", "Attack", "ASR", "UPR$_{trig}$", "MASE", "$\\Delta$MASE\\%"]
+    (tdir / "vulnerability.tex").write_text(_tabular("llrrrr", hdr, body, cap, "tab:vulnerability"))
     return "tables/vulnerability.tex"
 
 
@@ -232,8 +255,8 @@ def table_defenses(root: Path, tdir: Path, numbers: dict) -> str | None:
             fpr = clean.get("fpr_units") if clean else None
             cells = [DEFENSE_TEX.get(d, d), fmt(clean.get("mase_daily") if clean else None),
                      fmt(fpr, 2) if d in ("burstguard", "probe_screen") else "--"]
-            for att in ATTACKS:
-                r = pick(rows, attack__type=att, defense__name=d, train__peft=peft)
+            for att in ATTACKS_E3:
+                r = pick_att(rows, att, defense__name=d, train__peft=peft)
                 cells += [fmt((r or {}).get("asr"), 2), fmt((r or {}).get("mase_daily"))]
                 numbers["defenses"][f"{peft}/{d}/{att}"] = {"asr": _num((r or {}).get("asr")),
                                                             "mase": _num((r or {}).get("mase_daily")),
@@ -246,9 +269,9 @@ def table_defenses(root: Path, tdir: Path, numbers: dict) -> str | None:
         cap = (f"Defenses against burst-triggered backdoors ({PEFT_TEX[peft]} fine-tuning, 2/20 malicious sites): "
                "clean MASE without attack, BurstGuard false-positive rate on clean rounds (FPR), and ASR / MASE "
                "under each attack (means over 3 seeds$\\times$sites; CIs in the CSV of experiment E3).")
-        groups = [(3, "")] + [(2, ATTACK_TEX[a]) for a in ATTACKS]
-        hdr = ["Defense", "Clean MASE", "FPR"] + ["ASR", "MASE"] * len(ATTACKS)
-        (tdir / f"defenses_{peft}.tex").write_text(_tabular("lrr" + "rr" * len(ATTACKS), hdr, body, cap,
+        groups = [(3, "")] + [(2, ATTACK_TEX[a]) for a in ATTACKS_E3]
+        hdr = ["Defense", "Clean MASE", "FPR"] + ["ASR", "MASE"] * len(ATTACKS_E3)
+        (tdir / f"defenses_{peft}.tex").write_text(_tabular("lrr" + "rr" * len(ATTACKS_E3), hdr, body, cap,
                                                             f"tab:defenses-{peft}", groups))
         made = f"tables/defenses_{peft}.tex"
     return made and "tables/defenses_head.tex, tables/defenses_lora.tex"
@@ -266,24 +289,24 @@ def table_ablation(root: Path, tdir: Path, numbers: dict) -> str | None:
     if not t:
         return None
     rows, varying = t
-    others = [k for k in varying if k != "attack.type"]
+    others = [k for k in varying if not k.startswith("attack.")]
     variants: dict[str, dict[str, dict]] = {}
     for r in rows:
         key = json.dumps({k: r.get(k) for k in others}, sort_keys=True)
-        variants.setdefault(key, {})[r.get("attack.type")] = r
+        variants.setdefault(key, {})[akey(r)] = r
     body = []
     numbers["ablation"] = {}
     for key, by_att in sorted(variants.items(), key=lambda kv: (kv[0] != json.dumps({k: None for k in others},
                                                                                       sort_keys=True), kv[0])):
         any_r = next(iter(by_att.values()))
         lab = _variant_label(any_r, varying)
-        sc, cs, cl = by_att.get("scale"), by_att.get("constrain_scale"), by_att.get("none")
+        sc, cs, cl = by_att.get("scale"), by_att.get("scale@3"), by_att.get("none")
         body.append([lab.replace("_", "\\_"), fmt((sc or {}).get("auc_vs_clean"), 3),
                      fmt((cs or {}).get("auc_vs_clean"), 3), fmt((sc or {}).get("tpr_units"), 2),
                      fmt((cs or {}).get("tpr_units"), 2), fmt((cl or {}).get("fpr_units"), 2),
                      fmt((cl or {}).get("screen_cpu_s_mean"), 1)])
         numbers["ablation"][lab] = {"auc_scale": _num((sc or {}).get("auc_vs_clean")),
-                                    "auc_constrain": _num((cs or {}).get("auc_vs_clean")),
+                                    "auc_covert": _num((cs or {}).get("auc_vs_clean")),
                                     "fpr_clean": _num((cl or {}).get("fpr_units")),
                                     "screen_cpu_s": _num((cl or {}).get("screen_cpu_s_mean"))}
         if key == json.dumps({k: None for k in others}, sort_keys=True):
@@ -298,15 +321,15 @@ def table_ablation(root: Path, tdir: Path, numbers: dict) -> str | None:
                              fmt(g(sc, "fpr_clean") if g(sc, "fpr_clean") is not None else g(cl, "fpr_units"), 2),
                              "--"])
                 numbers["ablation"][f"rule:{rule}"] = {"auc_scale": _num(g(sc, "auc_vs_clean")),
-                                                       "auc_constrain": _num(g(cs, "auc_vs_clean")),
+                                                       "auc_covert": _num(g(cs, "auc_vs_clean")),
                                                        "tpr_scale": _num(g(sc, "tpr_units")),
-                                                       "tpr_constrain": _num(g(cs, "tpr_units")),
+                                                       "tpr_covert": _num(g(cs, "tpr_units")),
                                                        "fpr_clean": _num(g(sc, "fpr_clean"))}
     cap = ("BurstGuard ablation (Head fine-tuning, monitor mode): ROC AUC of the per-round score separating attacked "
            "rounds from clean-federation rounds, detection rate (TPR) at the deployed thresholds, false-positive "
            "rate on clean rounds, and server CPU seconds per screened round. Rows marked replayed apply another "
            "decision rule to the scores of the default variant (same rounds; AUC of the single score).")
-    hdr = ["Variant", "AUC scale", "AUC constr.", "TPR scale", "TPR constr.", "FPR", "CPU s"]
+    hdr = ["Variant", "AUC $\\gamma$=10", "AUC $\\gamma$=3", "TPR $\\gamma$=10", "TPR $\\gamma$=3", "FPR", "CPU s"]
     (tdir / "ablation.tex").write_text(_tabular("lrrrrrr", hdr, body, cap, "tab:ablation"))
     return "tables/ablation.tex"
 
@@ -527,7 +550,7 @@ def fig_example(root: Path, fdir: Path, made: list[str], numbers: dict, log=prin
         r = json.loads(rj.read_text())
         ov = r.get("overrides", {})
         if (r.get("status") == "success" and ov.get("attack.type") == "scale" and ov.get("train.peft") == "head"
-                and ov.get("run.seed") == 0 and ov.get("defense.name") in ("fedavg", "burstguard")
+                and not ov.get("attack.boost") and ov.get("run.seed") == 0 and ov.get("defense.name") in ("fedavg", "burstguard")
                 and (rj.parent / "final_theta.npy").exists()):
             want[ov["defense.name"]] = rj.parent
     if len(want) < 2:

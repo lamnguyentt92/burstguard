@@ -103,7 +103,7 @@ def expand(g: dict[str, Any], quick: bool = False, extra: dict[str, Any] | None 
             eff = {**bview, **ov}     # base-config values for the keys that drive the cost (rounds, ...)
             kind = ov.get("job.kind", "fl")
             jobs.append({"id": jid, "label": f"{label}_seed={seed}".strip("_"), "overrides": ov,
-                         "effective": eff, "kind": kind, "cost": _cost(eff, kind)})
+                         "effective": eff, "kind": kind, **_cost(eff, kind)})
     return jobs
 
 
@@ -132,10 +132,12 @@ def base_view(g: dict[str, Any]) -> dict[str, Any]:
         return {}
 
 
-def _cost(eff: dict[str, Any], kind: str = "fl") -> float:
-    """Relative cost (seconds on the reference machine from the prior cost model) used to balance shards."""
-    from burstguard.experiments.plan import PRIOR_MODEL, job_seconds
-    return job_seconds(PRIOR_MODEL, eff, kind)
+def _cost(eff: dict[str, Any], kind: str = "fl") -> dict[str, float]:
+    """Prior cost model (experiments/plan.py) used to balance shards: server seconds (any machine) and client
+    seconds on a 4-worker machine; "cost" = their sum."""
+    from burstguard.experiments.plan import PRIOR_MODEL, job_parts
+    srv, cli = job_parts(PRIOR_MODEL, eff, kind)
+    return {"cost": srv + cli, "cost_server": srv, "cost_client": cli}
 
 
 def parse_shard(spec: str) -> tuple[int, int, list[float] | None]:
@@ -159,14 +161,29 @@ def parse_shard(spec: str) -> tuple[int, int, list[float] | None]:
     return k, n, weights
 
 
+REF_WEIGHT = 4.0   # the client part of a job's cost is given for a 4-worker machine (experiments/plan.py)
+
+
+def job_time(j: dict, weight: float) -> float:
+    """Expected seconds of job j on a machine of the given weight (= parallel workers): server part + client part
+    scaled by REF_WEIGHT / weight. Jobs without the split (tests, old callers) scale entirely with the weight."""
+    srv = float(j.get("cost_server", 0.0))
+    cli = float(j.get("cost_client", j["cost"] - srv))
+    return srv + cli * REF_WEIGHT / weight
+
+
 def assign_weighted(jobs: list[dict], weights: list[float]) -> list[int]:
-    """Deterministic capacity-aware split: jobs by (-cost, id); each goes to the shard with the smallest
-    (assigned cost + job cost) / weight (ties -> lowest shard). Returns the shard index (0-based) per sorted job."""
+    """Deterministic capacity-aware split (greedy LPT on machines of different speed): jobs by (-cost, id); each
+    goes to the shard that would finish it first, i.e. smallest (assigned time + job time on that shard), where a
+    job's time on a shard is job_time(job, weight) (ties -> lowest shard). Returns the shard index (0-based) per
+    sorted job. With costs that scale entirely with the weight this equals the v0.3.3 rule
+    (assigned cost + job cost) / weight."""
     load = [0.0] * len(weights)
     out = []
     for j in sorted(jobs, key=lambda j: (-j["cost"], j["id"])):
-        best = min(range(len(weights)), key=lambda i: ((load[i] + j["cost"]) / weights[i], i))
-        load[best] += j["cost"]
+        t = [job_time(j, w) for w in weights]
+        best = min(range(len(weights)), key=lambda i: (load[i] + t[i], i))
+        load[best] += t[best]
         out.append(best)
     return out
 

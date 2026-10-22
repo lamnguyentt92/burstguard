@@ -117,11 +117,13 @@ def rule_flags(run_dir: Path, per_round: list[list[tuple]]) -> dict[str, list[in
 
 def summarize(run_dir: Path) -> dict[str, Any]:
     """Final metrics + series used by the analysis (also works on partial runs)."""
-    rounds, evals = [], []
+    rounds, evals, setup = [], [], {}
     p = run_dir / "metrics.jsonl"
     if p.exists():
         for line in p.read_text().splitlines():
             r = json.loads(line)
+            if r["kind"] == "setup":
+                setup = r
             (rounds if r["kind"] == "round" else evals if r["kind"] == "eval" else []).append(r)
     final: dict[str, Any] = {}
     for e in evals:
@@ -190,4 +192,7 @@ def summarize(run_dir: Path) -> dict[str, Any]:
             "round_wall_s_mean": float(np.mean([r["round_wall_s"] for r in rounds])) if rounds else None,
             "server_defense_cpu_s_mean": float(np.mean([r["server_defense_cpu_s"] for r in rounds])) if rounds else None,
             "client_train_cpu_s_mean": _client_cpu(rounds),
+            "clients_wall_s_mean": float(np.mean([r["clients_wall_s"] for r in rounds if r.get("clients_wall_s") is not None]))
+            if any(r.get("clients_wall_s") is not None for r in rounds) else None,
+            "workers": setup.get("workers"),
             "update_bytes": rounds[-1].get("update_bytes") if rounds else None}

@@ -81,12 +81,14 @@ DEFAULTS: dict[str, Any] = {
         "malicious_sites": [],   # explicit list overrides num_malicious
         "start_round": 1,
         "end_round": 0,          # exclusive; 0 = until the end
-        "poison_frac": 0.5,
-        "local_epochs": 10,      # attackers may train longer than benign clients (Bagdasaryan et al. 2020)
+        "poison_frac": 0.2,
+        "local_epochs": 5,       # attackers may train longer than benign clients (Bagdasaryan et al. 2020)
         "lr_mult": 3.0,          # attacker learning rate = lr_mult * train.lr
-        "boost": 0.0,            # scale attacks: 0 = num_sites / num_malicious (model replacement)
+        "boost": 0.0,            # scale / constrain / neurotoxin / adaptive: 0 = num_sites / num_malicious
+                                 # (model replacement); e.g. 3 = covert attacker (less damage to clean accuracy)
         "norm_bound": 0.0,       # constrain_scale: absolute bound; 0 = norm_mult x attacker's own benign update norm
-        "norm_mult": 1.0,        # constrain_scale / adaptive: bound = norm_mult x benign norm (when norm_bound = 0)
+        "norm_mult": 1.0,        # constrain_scale: bound = norm_mult x benign norm (when norm_bound = 0)
+        "adaptive_constrain": False,  # adaptive: also project to the norm bound (like constrain_scale)
         "neurotoxin_topk": 0.1,  # fraction of coordinates (largest recent global change) left untouched
         "decoy_frac": 1.0,       # adaptive: decoy windows per poisoned window (random bursts, clean labels)
     },
@@ -123,7 +125,8 @@ DEFAULTS: dict[str, Any] = {
         "mad_k": 5.0,
         "history": 5,            # rounds of accepted scores used by the adaptive thresholds
         "both_directions": True,
-        "threads": 0,            # torch threads while screening (clients are idle then); 0 = min(4, CPUs - 1)
+        "threads": 1,            # torch threads while screening; 0 = min(4, CPUs - 1). P0 v0.3.2: 3-4 threads gave no
+                                 # speed-up on the 32-64-window batches (same wall time, 3-5x the CPU seconds)
         "on_flag": "regroup",    # flagged aggregate: regroup (re-aggregate in random secure groups, keep clean ones)
                                  # | reject (discard the whole round)
         "regroup_groups": 5,

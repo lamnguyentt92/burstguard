@@ -62,16 +62,21 @@ def neurotoxin_mask(prev_global_delta: np.ndarray | None, layout, topk: float) -
     return masks
 
 
+def norm_bounded(at: dict[str, Any]) -> bool:
+    """constrain_scale always projects to the norm bound; adaptive only with attack.adaptive_constrain = true."""
+    return at["type"] == "constrain_scale" or (at["type"] == "adaptive" and bool(at.get("adaptive_constrain", False)))
+
+
 def postprocess(delta: np.ndarray, cfg: dict[str, Any], benign_norm: float | None) -> tuple[np.ndarray, dict]:
     at = cfg["attack"]
     t = at["type"]
     info: dict[str, Any] = {"raw_norm": float(np.linalg.norm(delta))}
-    if t in ("scale", "constrain_scale", "adaptive"):
+    if t in ("scale", "constrain_scale", "adaptive", "neurotoxin"):
         n_mal = len(at["malicious_sites"]) or int(at["num_malicious"])
         boost = float(at["boost"]) or float(cfg["data"]["num_sites"]) / max(1, n_mal)
         delta = delta * boost
         info["boost"] = boost
-    if t in ("constrain_scale", "adaptive"):
+    if norm_bounded(at):
         bound = float(at["norm_bound"]) or float(at.get("norm_mult", 1.0)) * float(benign_norm or 0.0)
         nrm = float(np.linalg.norm(delta))
         if bound > 0 and nrm > bound:
