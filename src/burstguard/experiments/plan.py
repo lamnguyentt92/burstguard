@@ -35,7 +35,14 @@ TIERS = {
 def _features(ov: dict[str, Any], kind: str) -> dict[str, Any]:
     bg = "burstguard" in str(ov.get("defense.name", "")) or "burstguard" in str(ov.get("defense.addons", ""))
     units = int(ov.get("secagg.groups", 1)) if ov.get("secagg.enabled") and int(ov.get("secagg.groups", 1)) > 1 else 1
-    return {"peft": ov.get("train.peft", "head"), "kind": kind, "rounds": int(ov.get("fl.rounds", 30)),
+    rounds = int(ov.get("fl.rounds", 30))
+    if (bg and units == 1 and ov.get("attack.type", "none") != "none" and ov.get("burstguard.mode") != "monitor"
+            and ov.get("burstguard.on_flag", "regroup") == "regroup"):
+        # flagged rounds are screened again in regroup_groups groups (assume every attacked round is flagged)
+        start, end = int(ov.get("attack.start_round", 1)), int(ov.get("attack.end_round", 0)) or rounds
+        frac = max(0, min(end, rounds) - start + 1) / max(rounds, 1)
+        units = 1 + frac * int(ov.get("burstguard.regroup_groups", 5))
+    return {"peft": ov.get("train.peft", "head"), "kind": kind, "rounds": rounds,
             "bg": bg, "units": units, "engine": ov.get("engine.name", "local")}
 
 

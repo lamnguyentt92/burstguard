@@ -41,7 +41,7 @@ Bài cần (ánh xạ sang lưới thí nghiệm và artefact do `burstguard pap
 
 ## 2. Kế hoạch 7 ngày (22/10 → 29/10)
 
-Ước tính máy (giá trị mặc định trước khi đo, `burstguard plan`): **~182 giờ-VM ≈ 39 giờ** khi chia đều 5 VM.
+Ước tính máy (giá trị mặc định trước khi đo, `burstguard plan`): **~243 giờ-VM ≈ 52 giờ** khi chia đều 5 VM (tầng 1 + hiệu chỉnh ≈ 34 giờ, tầng 2 ≈ 18 giờ).
 Sau pilot, `burstguard plan` tính lại bằng thời gian đo thật.
 
 | Ngày | Việc | Bạn làm | Gửi mình |
@@ -151,16 +151,16 @@ bash scripts/collect_logs.sh --campaign             # gửi mình cả .txt và 
 
 | Lưới | Tầng | Nội dung | Job | Giờ-VM (ước tính) |
 |---|---|---|---|---|
-| `P0_pilot` | pilot | {head, LoRA} × {không, poison, scale, constrain} + scale mạnh hơn — BurstGuard monitor, 20 vòng, 1 seed | 10 | ~2,5 |
+| `P0_pilot` | pilot | {head, LoRA} × {không, poison, scale, constrain} + scale mạnh hơn — BurstGuard monitor, 20 vòng, 1 seed | 10 | ~3 |
 | `E0_calibration` | calibration | BurstGuard monitor trên huấn luyện sạch, 4 PEFT × 3 seed | 12 | ~5 |
 | `E1_clean` | 1 | FL × 4 PEFT vs local-only vs centralized vs zero-shot | 39 | ~10 |
 | `E2_attacks` | 1 | 4 kịch bản × 4 PEFT × 3 seed, FedAvg | 48 | ~13 |
-| `E3_defenses` | 1 | {không + 3 tấn công} × 10 phòng thủ (gồm `probe_screen`) × {head, LoRA} | 228 | ~56 |
-| `E7_secagg` | 1 | SecAgg theo nhóm {1,2,4,5,10} × {FedAvg, BurstGuard, Median} + BurstGuard `reject` | 84 | ~30 |
+| `E3_defenses` | 1 | {không + 3 tấn công} × 10 phòng thủ (gồm `probe_screen`) × {head, LoRA} | 228 | ~71 |
+| `E7_secagg` | 1 | SecAgg theo nhóm {1,2,4,5,10} × {FedAvg, BurstGuard, Median} + BurstGuard `reject` | 84 | ~31 |
 | `E9_ablation` | 1 | 12 biến thể BurstGuard × {không, scale, constrain} | 108 | ~25 |
-| `E4_sensitivity` | 2 | số site độc {1,2,4} × biên độ {0,5;1;2} × 3 phòng thủ | 81 | ~10 |
-| `E5_lifespan` | 2 | tấn công vòng 10–19 trong 50 vòng | 39 | ~21 |
-| `E6_adaptive` | 2 | tấn công thích nghi, Neurotoxin, trigger ngoài vùng tìm kiếm | 48 | ~12 |
+| `E4_sensitivity` | 2 | số site độc {1,2,4} × biên độ {0,5;1;2} × 3 phòng thủ | 81 | ~32 |
+| `E5_lifespan` | 2 | tấn công vòng 10–19 trong 50 vòng | 39 | ~25 |
+| `E6_adaptive` | 2 | tấn công thích nghi, Neurotoxin, trigger ngoài vùng tìm kiếm | 48 | ~27 |
 | `E8_system` | system | Flower + SecAgg+ thật, 5 vòng | 8 | ~1 |
 
 ---

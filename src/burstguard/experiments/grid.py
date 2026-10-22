@@ -83,10 +83,11 @@ def expand(g: dict[str, Any], quick: bool = False, extra: dict[str, Any] | None 
             continue
         for seed in gr.get("seeds", [0]):
             ov = {**g.get("fixed", {}), **combo, "run.seed": int(seed)}
-            if quick:
-                ov.update(g.get("quick", {"fl.rounds": 2, "fl.eval_every": 1, "data.max_train_windows": 200,
-                                          "data.max_eval_windows": 48, "burstguard.steps": 3,
-                                          "burstguard.restarts": 1, "burstguard.probe_windows": 16}))
+            if quick:  # shrink everything except what the configuration itself varies
+                q = g.get("quick", {"fl.rounds": 2, "fl.eval_every": 1, "data.max_train_windows": 200,
+                                    "data.max_eval_windows": 48, "burstguard.steps": 3,
+                                    "burstguard.restarts": 1, "burstguard.probe_windows": 16})
+                ov.update({k: v for k, v in q.items() if k not in combo})
             if extra:
                 ov.update(extra)
             key = json.dumps(ov, sort_keys=True)
