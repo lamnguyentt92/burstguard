@@ -272,13 +272,14 @@ def cmd_grid(a, ctx):
         if res["ran_failed"]:
             raise SystemExit(f"{res['ran_failed']} job(s) failed - see results/<...>/<job>/job.log and result.json")
     elif a.gcmd == "status":
-        st = G.grid_status(a.file, quick=a.quick, n_shards=a.shards, extra=G.parse_kv(a.extra), tag=a.tag)
+        w = [float(x) for x in a.weights.split(",")] if a.weights else None
+        st = G.grid_status(a.file, quick=a.quick, n_shards=a.shards, extra=G.parse_kv(a.extra), tag=a.tag, weights=w)
         print(json.dumps(st, indent=2))
         ctx.save_json("grid_status.json", st)
     elif a.gcmd == "list":
         g = G.load_grid(a.file)
         jobs = G.expand(g, quick=a.quick)
-        for j in (G.shard(jobs, *map(int, a.shard.split("/"))) if a.shard else jobs):
+        for j in (G.shard_from_spec(jobs, a.shard) if a.shard else jobs):
             print(f"{j['id']}  cost={j['cost']:6.0f}  {j['label']}")
         print(f"{len(jobs)} jobs")
 
@@ -332,7 +333,8 @@ def cmd_plan(a, ctx):
                         for n in PL.TIERS.get(t, [])]
     files = [resolve(n) if n.endswith(".toml") else ROOT / "experiments" / f"{n}.toml" for n in names]
     files = [f for f in files if _P(f).exists()]
-    res = PL.plan(files, n_shards=a.shards)
+    weights = [float(x) for x in a.weights.split(",")] if a.weights else PL.read_weights_file()
+    res = PL.plan(files, n_shards=a.shards, weights=weights)
     ctx.save_json("plan.json", res)
     ctx.set(total_left_hours_1vm=res["total_left_hours_1vm"], wall_hours_if_sharded=res["wall_hours_if_sharded"])
 
@@ -517,7 +519,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     gp = sub.add_parser("grid", help="experiment grids").add_subparsers(dest="gcmd", required=True)
     s = gp.add_parser("run", help="run (a shard of) a grid, resuming finished jobs")
-    s.add_argument("file"); s.add_argument("--shard", default="1/1", help="k/n, e.g. 2/5 on the second of five VMs")
+    s.add_argument("file"); s.add_argument("--shard", default="1/1",
+                                            help="k/N (e.g. 2/5) or weighted k/N@w1,...,wN (e.g. 2/5@6,2,3,1,3)")
     s.add_argument("--quick", action="store_true"); s.add_argument("--no-retry", action="store_true")
     s.add_argument("--max-jobs", type=int, default=0)
     s.add_argument("--extra", action="append", default=[], help="TESTING ONLY: extra override KEY=VALUE for every job")
@@ -527,8 +530,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = gp.add_parser("status", help="progress per shard"); s.add_argument("file")
     s.add_argument("--shards", type=int, default=1); s.add_argument("--quick", action="store_true")
     s.add_argument("--extra", action="append", default=[]); s.add_argument("--tag", default="")
+    s.add_argument("--weights", default="", help="w1,...,wN for weighted shards (same as cluster.weights)")
     s.set_defaults(fn=cmd_grid, name="status")
-    s = gp.add_parser("list", help="list jobs"); s.add_argument("file"); s.add_argument("--shard", default="")
+    s = gp.add_parser("list", help="list jobs"); s.add_argument("file")
+    s.add_argument("--shard", default="", help="k/N or k/N@w1,...,wN")
     s.add_argument("--quick", action="store_true"); s.set_defaults(fn=cmd_grid, name="list")
 
     s = sub.add_parser("analyze", help="tables, statistics and figures for a grid")
@@ -544,6 +549,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("grids", nargs="*", help="grid names or files (default: all tiers)")
     s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system")
     s.add_argument("--shards", type=int, default=5)
+    s.add_argument("--weights", default="", help="w1,...,wN shard weights (default: $BURSTGUARD_SHARED/cluster.weights "
+                                                  "if it exists, else equal shards)")
     s.set_defaults(fn=cmd_plan)
     s = sub.add_parser("calibrate", help="BurstGuard threshold from monitor-mode clean runs")
     s.add_argument("target"); s.add_argument("--quick", action="store_true")
@@ -576,7 +583,8 @@ def main(argv: list[str] | None = None) -> int:
         if ov.replace(" ", "").startswith("run.name="):
             name = ov.split("=", 1)[1].strip().strip("\"'") or name
     if getattr(args, "file", None):
-        name = os.path.splitext(os.path.basename(args.file))[0] + (f"_shard{args.shard.replace('/', 'of')}" if getattr(args, "shard", "") else "")
+        sh = str(getattr(args, "shard", "") or "").split("@")[0]  # weights are logged in the run, not the dir name
+        name = os.path.splitext(os.path.basename(args.file))[0] + (f"_shard{sh.replace('/', 'of')}" if sh else "")
     try:
         with RunContext(cmd, name, ["burstguard", *argv]) as ctx:
             args.fn(args, ctx)

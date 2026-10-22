@@ -10,6 +10,7 @@
 #   bash scripts/run_grids.sh 2/5 --tier 1,2            # both, in order
 #   bash scripts/run_grids.sh 2/5 E3_defenses E7_secagg # explicit grids
 #   bash scripts/run_grids.sh 1/1 --quick E3_defenses   # pipeline check
+#   bash scripts/run_grids.sh 2/5@4,1,3,1,3 --tier 1    # weighted shard (scripts/cluster.sh does this for you)
 # E8_system (timings) runs on ONE idle VM: bash scripts/run_grids.sh 1/1 --tier system
 # Log: logs/run_grids_v<VERSION>_<shard>_<ts>.log
 set -u
@@ -17,7 +18,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 VER="$(cat VERSION)"
 SHARD="${1:-}"
-[[ "$SHARD" =~ ^[0-9]+/[0-9]+$ ]] || { echo "usage: bash scripts/run_grids.sh K/N [--quick] [--tier T] [GRID ...]"; exit 2; }
+[[ "$SHARD" =~ ^[0-9]+/[0-9]+(@[0-9.]+(,[0-9.]+)*)?$ ]] || {
+  echo "usage: bash scripts/run_grids.sh K/N[@w1,...,wN] [--quick] [--tier T] [GRID ...]"; exit 2; }
 shift
 QUICK=(); TIERS=""; GRIDS=()
 while [ $# -gt 0 ]; do
@@ -55,7 +57,8 @@ source .venv/bin/activate
 
 mkdir -p logs
 TS="$(date +%Y%m%d-%H%M%S)"
-LOG="logs/run_grids_v${VER}_${SHARD/\//of}_${TS}.log"
+SH_NAME="${SHARD%%@*}"                     # log name without the weights (they are printed inside the log)
+LOG="logs/run_grids_v${VER}_${SH_NAME/\//of}_${TS}.log"
 echo "[burstguard v$VER] run_grids shard=$SHARD grids=${GRIDS[*]} ${QUICK[*]:-} host=$(hostname) log=$LOG" | tee -a "$LOG"
 FAILED=()
 for g in "${GRIDS[@]}"; do

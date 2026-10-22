@@ -34,7 +34,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from burstguard import VERSION_TAG, __version__
+from burstguard import EXPERIMENT_CODE, VERSION_TAG, __version__
 from burstguard.config import dump_toml, load_config
 from burstguard.paths import RESULTS_DIR, resolve
 
@@ -108,12 +108,56 @@ def _cost(ov: dict[str, Any]) -> float:
     return c
 
 
-def shard(jobs: list[dict], k: int, n: int) -> list[dict]:
-    """Balanced deterministic split: sort by cost (desc) then deal round-robin; shard k in 1..n."""
+def parse_shard(spec: str) -> tuple[int, int, list[float] | None]:
+    """"k/N" or weighted "k/N@w1,w2,...,wN" -> (k, N, weights or None)."""
+    spec = str(spec).strip()
+    base, _, w = spec.partition("@")
+    try:
+        k, n = (int(x) for x in base.split("/"))
+    except ValueError:
+        raise ValueError(f"shard must be k/N or k/N@w1,...,wN, got {spec!r}") from None
+    if not (1 <= k <= n):
+        raise ValueError("shard must be k/N with 1 <= k <= N")
+    weights = None
+    if w:
+        try:
+            weights = [float(x) for x in w.split(",")]
+        except ValueError:
+            raise ValueError(f"shard weights must be numbers, got {w!r}") from None
+        if len(weights) != n or any(x <= 0 for x in weights):
+            raise ValueError(f"shard {spec!r}: need {n} positive weights")
+    return k, n, weights
+
+
+def assign_weighted(jobs: list[dict], weights: list[float]) -> list[int]:
+    """Deterministic capacity-aware split: jobs by (-cost, id); each goes to the shard with the smallest
+    (assigned cost + job cost) / weight (ties -> lowest shard). Returns the shard index (0-based) per sorted job."""
+    load = [0.0] * len(weights)
+    out = []
+    for j in sorted(jobs, key=lambda j: (-j["cost"], j["id"])):
+        best = min(range(len(weights)), key=lambda i: ((load[i] + j["cost"]) / weights[i], i))
+        load[best] += j["cost"]
+        out.append(best)
+    return out
+
+
+def shard(jobs: list[dict], k: int, n: int, weights: list[float] | None = None) -> list[dict]:
+    """Deterministic split, shard k in 1..n. Unweighted: sort by cost (desc) and deal round-robin (unchanged since
+    v0.2.0). Weighted: greedy capacity-aware assignment (assign_weighted)."""
     if not (1 <= k <= n):
         raise ValueError("shard must be k/n with 1 <= k <= n")
     order = sorted(jobs, key=lambda j: (-j["cost"], j["id"]))
+    if weights:
+        if len(weights) != n:
+            raise ValueError(f"need {n} weights, got {len(weights)}")
+        idx = assign_weighted(jobs, weights)
+        return [j for j, i in zip(order, idx) if i == k - 1]
     return [j for i, j in enumerate(order) if i % n == k - 1]
+
+
+def shard_from_spec(jobs: list[dict], spec: str) -> list[dict]:
+    k, n, w = parse_shard(spec)
+    return shard(jobs, k, n, w)
 
 
 def grid_dir(g: dict[str, Any], quick: bool = False, tag: str = "") -> Path:
@@ -149,7 +193,7 @@ def run_job(g: dict[str, Any], job: dict[str, Any], jdir: Path, log=print) -> di
         print(line, flush=True); logf.write(line + "\n")
 
     t0 = time.time()
-    res: dict[str, Any] = {"version": __version__, "grid": g["grid"]["name"], "job_id": job["id"],
+    res: dict[str, Any] = {"version": __version__, "exp_code": EXPERIMENT_CODE, "grid": g["grid"]["name"], "job_id": job["id"],
                            "label": job["label"], "overrides": job["overrides"], "kind": job["kind"]}
     try:
         cfg = job_config(g, job)
@@ -208,14 +252,15 @@ def run_grid(path: str, shard_spec: str = "1/1", quick: bool = False, retry_fail
     if seeds:
         g["grid"]["seeds"] = list(seeds)
     jobs = expand(g, quick, extra)
-    k, n = (int(x) for x in shard_spec.split("/"))
-    mine = shard(jobs, k, n)
+    k, n, weights = parse_shard(shard_spec)
+    mine = shard(jobs, k, n, weights)
     gdir = grid_dir(g, quick, tag)
     gdir.mkdir(parents=True, exist_ok=True)
     (gdir / "grid.json").write_text(json.dumps({"version": __version__, "grid": g["grid"], "n_jobs": len(jobs),
                                                 "source": g["_path"]}, indent=2, default=str))
-    log(f"grid {g['grid']['name']}{' (quick)' if quick else ''}: {len(jobs)} jobs total, shard {k}/{n} -> {len(mine)} jobs, "
-        f"results in {gdir}")
+    wtxt = f" (weights {','.join(f'{x:g}' for x in weights)})" if weights else ""
+    log(f"grid {g['grid']['name']}{' (quick)' if quick else ''}: {len(jobs)} jobs total, shard {k}/{n}{wtxt} -> "
+        f"{len(mine)} jobs, results in {gdir}")
     done = failed = skipped = 0
     for i, job in enumerate(mine, 1):
         jdir = gdir / job["id"]
@@ -236,17 +281,20 @@ def run_grid(path: str, shard_spec: str = "1/1", quick: bool = False, retry_fail
 
 
 def grid_status(path: str, quick: bool = False, n_shards: int = 1, extra: dict[str, Any] | None = None,
-                tag: str = "") -> dict[str, Any]:
+                tag: str = "", weights: list[float] | None = None) -> dict[str, Any]:
     g = load_grid(path)
     jobs = expand(g, quick, extra)
     gdir = grid_dir(g, quick, tag)
+    if weights and len(weights) != n_shards:
+        raise ValueError(f"--weights needs {n_shards} values (one per shard)")
     by_shard = {}
     for k in range(1, n_shards + 1):
         counts: dict[str, int] = {}
-        for j in shard(jobs, k, n_shards):
+        for j in shard(jobs, k, n_shards, weights):
             s = job_status(gdir / j["id"])
             counts[s] = counts.get(s, 0) + 1
         by_shard[f"{k}/{n_shards}"] = counts
     failed = [j["id"] + " " + j["label"] for j in jobs if job_status(gdir / j["id"]) == "failed"]
     return {"grid": g["grid"]["name"], "n_jobs": len(jobs), "results_dir": str(gdir), "by_shard": by_shard,
+            "weights": weights,
             "failed_jobs": failed[:50]}

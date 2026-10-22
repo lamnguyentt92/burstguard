@@ -110,9 +110,29 @@ def job_seconds(model: dict[str, Any], ov: dict[str, Any], kind: str) -> float:
     return s
 
 
-def plan(grid_files: list[Path], n_shards: int = 5, log=print) -> dict[str, Any]:
+REF_WEIGHT = 4.0   # measured per-round times are taken as those of a weight-4 machine (8 vCPU, ~8 GB: 4 workers)
+
+
+def read_weights_file(path: Path | None = None) -> list[float] | None:
+    """Shard weights written by scripts/cluster.sh ($BURSTGUARD_SHARED/cluster.weights: "w1,w2,...,wN")."""
+    from burstguard.paths import SHARED_DIR
+    p = Path(path) if path else SHARED_DIR / "cluster.weights"
+    if not p.exists():
+        return None
+    for line in p.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            w = [float(x) for x in line.split(",")]
+            return w if w and all(x > 0 for x in w) else None
+    return None
+
+
+def plan(grid_files: list[Path], n_shards: int = 5, log=print, weights: list[float] | None = None) -> dict[str, Any]:
     from burstguard import VERSION_TAG
     from burstguard.paths import RESULTS_DIR
+    if weights:
+        n_shards = len(weights)
+    speed = [w / REF_WEIGHT for w in weights] if weights else [1.0] * n_shards
     root = RESULTS_DIR / VERSION_TAG
     finished = collect_finished(root) if root.exists() else []
     model = fit(finished)
@@ -122,9 +142,14 @@ def plan(grid_files: list[Path], n_shards: int = 5, log=print) -> dict[str, Any]
         log(f"  {peft:8s} FL round: {cost_per_round(model, peft, 'fl'):7.1f} s   [{src}]")
     log(f"  BurstGuard: {model['s_bg']:.1f} s per screened unit and round   [{model['s_bg_src']}]")
     out = {"model": {"s_bg": model["s_bg"], "c": {f"{k[0]}/{k[1]}": v for k, v in model["c"].items()}},
-           "grids": [], "n_shards": n_shards}
+           "grids": [], "n_shards": n_shards, "weights": weights}
+    if weights:
+        log(f"  weighted shards {','.join(f'{w:g}' for w in weights)}: shard wall time = its job time / (weight/"
+            f"{REF_WEIGHT:g}) (assumption: measured round times come from a weight-{REF_WEIGHT:g} machine, "
+            "i.e. 8 vCPU with 4 workers; a weight-1 machine runs ~4x slower)")
     tot_left = 0.0
     shard_left = [0.0] * n_shards
+    equal_left = [0.0] * n_shards   # same machines, plain round-robin shards (for comparison)
     log(f"\n{'grid':18s} {'jobs':>5s} {'done':>5s} {'fail':>5s} {'left_h(1 VM)':>13s} "
         f"{'per-shard h (max of ' + str(n_shards) + ')':>24s}")
     for gf in grid_files:
@@ -135,7 +160,7 @@ def plan(grid_files: list[Path], n_shards: int = 5, log=print) -> dict[str, Any]
         left = 0.0
         per_shard = [0.0] * n_shards
         for k in range(1, n_shards + 1):
-            for j in G.shard(jobs, k, n_shards):
+            for j in G.shard(jobs, k, n_shards, weights):
                 st = G.job_status(gdir / j["id"])
                 if st == "success":
                     done += 1
@@ -143,7 +168,12 @@ def plan(grid_files: list[Path], n_shards: int = 5, log=print) -> dict[str, Any]
                 fail += st == "failed"
                 sec = job_seconds(model, j["overrides"], j["kind"])
                 left += sec
-                per_shard[k - 1] += sec
+                per_shard[k - 1] += sec / speed[k - 1]
+        if weights:
+            for k in range(1, n_shards + 1):
+                for j in G.shard(jobs, k, n_shards):
+                    if G.job_status(gdir / j["id"]) != "success":
+                        equal_left[k - 1] += job_seconds(model, j["overrides"], j["kind"]) / speed[k - 1]
         for i in range(n_shards):
             shard_left[i] += per_shard[i]
         tot_left += left
@@ -155,6 +185,12 @@ def plan(grid_files: list[Path], n_shards: int = 5, log=print) -> dict[str, Any]
     out["total_left_hours_1vm"] = round(tot_left / 3600, 1)
     out["wall_hours_if_sharded"] = round(max(shard_left) / 3600, 1) if shard_left else 0.0
     log(f"{'TOTAL':18s} {'':5s} {'':5s} {'':5s} {tot_left / 3600:13.1f} {max(shard_left) / 3600:24.1f}")
+    if weights:
+        out["per_shard_wall_hours"] = [round(x / 3600, 1) for x in shard_left]
+        out["wall_hours_equal_shards_same_machines"] = round(max(equal_left) / 3600, 1)
+        log(f"per-shard wall hours: {', '.join(f'{k + 1}: {x / 3600:.1f}' for k, x in enumerate(shard_left))}")
+        log(f"(equal round-robin shards on the same machines would take ~{max(equal_left) / 3600:.0f} h: "
+            "the slowest machine gets as much work as the fastest)")
     log(f"\n=> about {out['wall_hours_if_sharded']:.0f} h wall time with {n_shards} VMs running these grids in sequence "
-        f"(each VM its own shard).")
+        f"(each VM its own {'weighted ' if weights else ''}shard).")
     return out

@@ -203,3 +203,32 @@ def test_plan_cost_model():
     s = PL.job_seconds(m, {"train.peft": "head", "fl.rounds": 30, "defense.name": "burstguard",
                            "secagg.enabled": True, "secagg.groups": 5}, "fl")
     assert s == pytest.approx(30 * (10 + 20 * 5))
+
+
+def test_weighted_shards():
+    from burstguard.experiments.grid import parse_shard, shard, shard_from_spec
+    rng = np.random.default_rng(3)
+    jobs = [{"id": f"j{i:03d}", "cost": float(c)} for i, c in enumerate(rng.choice([30, 170, 400, 900], size=300))]
+    # unweighted: unchanged round-robin over (-cost, id)
+    order = sorted(jobs, key=lambda j: (-j["cost"], j["id"]))
+    assert [j["id"] for j in shard(jobs, 2, 5)] == [j["id"] for i, j in enumerate(order) if i % 5 == 1]
+    assert parse_shard("2/5") == (2, 5, None)
+    w = [4, 1, 3, 1, 3]
+    assert parse_shard("3/5@4,1,3,1,3") == (3, 5, [4.0, 1.0, 3.0, 1.0, 3.0])
+    parts = [shard_from_spec(jobs, f"{k}/5@4,1,3,1,3") for k in range(1, 6)]
+    ids = sorted(j["id"] for p in parts for j in p)
+    assert ids == sorted(j["id"] for j in jobs)                      # every job exactly once
+    load = [sum(j["cost"] for j in p) for p in parts]
+    share = [x / sum(load) for x in load]
+    for s_, wi in zip(share, w):
+        assert abs(s_ - wi / sum(w)) < 0.03                          # cost proportional to weight
+    assert [j["id"] for j in shard_from_spec(jobs, "1/5@4,1,3,1,3")] == [j["id"] for j in parts[0]]  # deterministic
+    for bad in ("0/5", "6/5", "2/5@1,2", "2/5@1,1,1,1,0", "x"):
+        with pytest.raises(ValueError):
+            parse_shard(bad)
+
+
+def test_exp_code_mixing():
+    from burstguard.experiments.analyze import exp_code
+    assert exp_code({"version": "0.3.2"}) == exp_code({"version": "0.3.3", "exp_code": "0.3.0"}) == "0.3.0"
+    assert exp_code({"version": "0.2.2"}) == "0.2.2"

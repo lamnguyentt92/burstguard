@@ -100,6 +100,17 @@ def holm(pvals: list[float]) -> list[float]:
     return adj.tolist()
 
 
+_LEGACY_EXP_CODE = {"0.3.0": "0.3.0", "0.3.1": "0.3.0", "0.3.2": "0.3.0"}
+
+
+def exp_code(res: dict[str, Any]) -> str:
+    """Experiment-code version of a job result (results before 0.3.3 carry only the release version)."""
+    if res.get("exp_code"):
+        return str(res["exp_code"])
+    v = str(res.get("version", "?"))
+    return _LEGACY_EXP_CODE.get(v, v)
+
+
 def build_rows(gdir: Path, split: str = "test", log=print) -> tuple[list[dict], list[str], list[dict]]:
     """Group successful jobs of a grid by configuration (all overrides except seed) and compute the statistics.
     Returns (rows, varying keys, jobs)."""
@@ -113,9 +124,11 @@ def build_rows(gdir: Path, split: str = "test", log=print) -> tuple[list[dict], 
         jobs.append({"dir": jd, "res": res, "per": per})
     if not jobs:
         raise RuntimeError(f"no successful jobs with results in {gdir}")
-    vers = sorted({j["res"].get("version", "?") for j in jobs})
-    if len(vers) > 1:
-        log(f"WARNING: results from several code versions are mixed in {gdir}: {vers}")
+    codes = sorted({exp_code(j["res"]) for j in jobs})
+    if len(codes) > 1:
+        vers = sorted({j["res"].get("version", "?") for j in jobs})
+        log(f"WARNING: results from different experiment code are mixed in {gdir}: exp_code {codes} "
+            f"(versions {vers})")
     shas = sorted({str(j["res"].get("base_config_sha")) for j in jobs})
     if len(shas) > 1:
         log(f"WARNING: jobs in {gdir} were run with {len(shas)} different base configs ({', '.join(shas)}); "

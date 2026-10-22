@@ -3,6 +3,26 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.3] — 2026-10-22
+
+Operations release for heterogeneous VMs; experiment code identical to 0.3.0 (`EXPERIMENT_CODE = "0.3.0"`).
+
+### Added
+- Weighted shards `k/N@w1,...,wN` (`grid run/list --shard`, `grid status --weights`, `run_grids.sh`): jobs sorted by
+  (-cost, id) are assigned greedily to the shard with the smallest (assigned cost + job cost) / weight (ties: lowest
+  shard). Deterministic; plain `k/N` keeps the round-robin assignment of earlier versions unchanged.
+- `scripts/cluster.sh start` uses weights from `$BURSTGUARD_SHARED/cluster.weights` (this machine first, then the
+  hosts-file order); if missing, computes them once from each machine's capacity
+  `max(1, min(nproc-1, floor((MemAvailable_GiB-2.5)/1.4)))` (the engine's worker count) and refuses while experiments
+  are still running (free memory would be underestimated). `--equal` forces plain round-robin; `status` prints the
+  weights in use.
+- `cluster.sh import OLD_VERSION`: on every machine, copies finished jobs (status success) from
+  `~/burstguard-vOLD/results/vOLD/` into this version's results so they are skipped.
+- `burstguard plan --weights` (default: the cluster.weights file): wall time per shard = job time / (weight / 4)
+  (measured round times are taken as those of a weight-4 machine), plus the equal-shard time on the same machines.
+- `EXPERIMENT_CODE` recorded in every result (`exp_code`); `analyze` warns only when results with different experiment
+  code are mixed (0.3.0–0.3.2 results without the field count as 0.3.0).
+
 ## [0.3.2] — 2026-10-22
 
 Operations release; experiment code identical to 0.3.0.

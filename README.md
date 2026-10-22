@@ -10,7 +10,8 @@ Mục tiêu: bài nộp collection *Trustworthy and Efficient Time-Series Intell
 
 | Phiên bản | Nội dung | Hướng dẫn (tiếng Việt) |
 |---|---|---|
-| **v0.3.2** (hiện tại) | Không cần tmux: `cluster.sh` chạy nền bằng `nohup` (start/status/stop từ vm-e); `cluster.sh --bg collect` tự chờ các lưới xong ở cả 5 máy rồi gom kết quả, phân tích, báo cáo | [docs/README_v0.3.2.md](docs/README_v0.3.2.md) |
+| **v0.3.3** (hiện tại) | Chia việc theo sức máy (weighted shards, `~/burstguard-shared/cluster.weights`); `cluster.sh import 0.3.2` chuyển job đã xong; `burstguard plan` tính theo sức từng máy; mã thí nghiệm như v0.3.0 | [docs/README_v0.3.3.md](docs/README_v0.3.3.md) |
+| v0.3.2 | Không cần tmux: `cluster.sh` chạy nền bằng `nohup` (start/status/stop từ vm-e); `cluster.sh --bg collect` tự chờ các lưới xong ở cả 5 máy rồi gom kết quả, phân tích, báo cáo | [docs/README_v0.3.2.md](docs/README_v0.3.2.md) |
 | v0.3.1 | v0.3.0 + `scripts/cluster.sh`: điều khiển 5 VM từ vm-e (khoá ssh, kiểm tra, chép dữ liệu, cài đặt, smoke, start/status/stop các lưới trong tmux) | [docs/README_v0.3.1.md](docs/README_v0.3.1.md) |
 | v0.3.0 | Chiến dịch 7 ngày cho bài báo: pilot `P0_pilot`, `burstguard plan` (ước tính thời gian), `run_grids.sh --tier`, `sync_results.sh`, `analyze all`, `burstguard paper` (bảng LaTeX/hình/numbers.json), `collect_logs.sh --campaign`; baseline `probe_screen` | [docs/README_v0.3.0.md](docs/README_v0.3.0.md) |
 | v0.2.2 | Tải dữ liệu Milan qua guestbook của Harvard Dataverse (`burstguard data guestbook` → POST câu trả lời → signed URL); lỗi 4xx không thử lại và in lý do của server | [docs/README_v0.2.2.md](docs/README_v0.2.2.md) |
@@ -26,16 +27,16 @@ Phiên bản đang dùng: `cat VERSION` hoặc `burstguard --version`.
 ## Bắt đầu nhanh (mỗi phiên bản một thư mục riêng — không đè bản cũ)
 
 ```bash
-git clone -b release/v0.3.2 https://github.com/lamnguyentt92/burstguard.git ~/burstguard-v0.3.2
-cd ~/burstguard-v0.3.2
+git clone -b release/v0.3.3 https://github.com/lamnguyentt92/burstguard.git ~/burstguard-v0.3.3
+cd ~/burstguard-v0.3.3
 bash scripts/setup_venv.sh          # tạo .venv cô lập trong thư mục này (không cần sudo)
 source .venv/bin/activate
 burstguard doctor && burstguard smoke
-bash scripts/collect_logs.sh        # gom log (thành công hay thất bại) -> reports/bg_report_v0.3.2_*.txt
+bash scripts/collect_logs.sh        # gom log (thành công hay thất bại) -> reports/bg_report_v0.3.3_*.txt
 ```
 
 Dữ liệu lớn (Milan, trọng số mô hình) nằm ở `~/burstguard-shared` và dùng chung cho mọi phiên bản.
-Chi tiết từng bước, lưới thí nghiệm, phân tích kết quả và cách gửi log: **[docs/README_v0.3.2.md](docs/README_v0.3.2.md)**.
+Chi tiết từng bước, lưới thí nghiệm, phân tích kết quả và cách gửi log: **[docs/README_v0.3.3.md](docs/README_v0.3.3.md)**.
 
 ## Cấu trúc mã
 

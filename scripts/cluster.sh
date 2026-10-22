@@ -20,11 +20,16 @@
 #                                        # (pull results every 10 min), then analyze all, calibrate, plan and
 #                                        # collect_logs --campaign. Follow it: tail -f logs/cluster_collect_*.log
 #    bash scripts/cluster.sh stop        # stop the background run everywhere (start again = resume)
+#    bash scripts/cluster.sh import 0.3.2  # copy jobs finished under v0.3.2 into this version (they are skipped)
+# Weighted shards (default): machines get work in proportion to their capacity (parallel workers), computed once
+# and stored in ~/burstguard-shared/cluster.weights ("w1,...,wN": this machine, then the hosts-file order).
+# Never edit it during a campaign (it fixes which machine runs which job); delete it to recompute.
 # Options (before the command):
 #   --hosts FILE   other hosts file          --no-local   this machine does not run a shard
 #   --local-only   only this machine (e.g. E8: --local-only --name e8 start "--tier system")
 #   --name NAME    name of the background run (default bg)      --force   start even if one is running
 #   --bg           run the command itself in the background (for collect)
+#   --equal        equal round-robin shards k/N instead of weighted shards
 # Logs: logs/cluster_<command>_<host>_<time>.log, background output logs/cluster_<name>.out (on each machine)
 # =============================================================================
 set -u
@@ -35,7 +40,7 @@ SHARED="${BURSTGUARD_SHARED:-$HOME/burstguard-shared}"
 HOSTS_FILE="$SHARED/cluster.hosts"
 REPO="https://github.com/lamnguyentt92/burstguard.git"
 RDIR="burstguard-v$VER"                     # remote checkout, relative to the remote home
-LOCAL=1; REMOTE=1; FORCE=0; NAME="bg"; BG=0
+LOCAL=1; REMOTE=1; FORCE=0; NAME="bg"; BG=0; EQUAL=0
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 ORIG_ARGS=("$@")
 
@@ -47,6 +52,7 @@ while [ $# -gt 0 ]; do
     --name) NAME="$2"; shift 2 ;;
     --force) FORCE=1; shift ;;
     --bg) BG=1; shift ;;
+    --equal) EQUAL=1; shift ;;
     *) break ;;
   esac
 done
@@ -55,7 +61,7 @@ mkdir -p logs
 TS="$(date +%Y%m%d-%H%M%S)"
 say() { echo "[burstguard v$VER cluster $(date +%H:%M:%S)] $*"; }
 
-if [ -z "$CMD" ] || [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then sed -n '2,31p' "$0"; exit 0; fi
+if [ -z "$CMD" ] || [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then sed -n '2,36p' "$0"; exit 0; fi
 
 # --bg: re-run this very command detached from the terminal (survives logout), output in a log file
 if [ $BG = 1 ]; then
@@ -82,6 +88,40 @@ N=$(( ${#HOSTS[@]} + 1 ))                   # shard count: this machine + the ho
 [ $REMOTE = 1 ] || HOSTS=()
 hlog() { echo "logs/cluster_${CMD}_$(echo "$1" | tr '@/:' '___')_${TS}.log"; }
 rsh() { local h="$1"; shift; ssh "${SSH_OPTS[@]}" "$h" "$@"; }
+
+# capacity = parallel workers the engine would use: max(1, min(CPUs - 1, floor((MemAvailable GiB - 2.5) / 1.4)))
+# (same formula as burstguard.engines.common.auto_workers)
+# (free memory is only meaningful while no experiment runs there -> report BUSY in that case)
+CAP_CMD='if pgrep -f "burstguard [g]rid run" >/dev/null 2>&1; then echo BUSY; else awk -v n="$(nproc)" "/MemAvailable/{m=\$2/1048576; w=int((m-2.5)/1.4); if (w>n-1) w=n-1; if (w<1) w=1; print w}" /proc/meminfo; fi'
+WEIGHTS_FILE="$SHARED/cluster.weights"
+ALL_HOSTS=("${HOSTS[@]}")
+read_weights() { [ -f "$WEIGHTS_FILE" ] && grep -vE '^\s*(#|$)' "$WEIGHTS_FILE" | head -n1 | tr -d ' '; }
+ensure_weights() {  # prints the weights line "w1,...,wN" (shard 1 = this machine, then hosts-file order)
+  local w; w="$(read_weights)"
+  if [ -n "$w" ]; then
+    if [ "$(echo "$w" | tr ',' '\n' | wc -l)" != "$N" ]; then
+      say "ERROR: $WEIGHTS_FILE has $(echo "$w" | tr ',' '\n' | wc -l) weights but there are $N machines" >&2; return 1; fi
+    echo "$w"; return 0
+  fi
+  local caps=() c h busy=()
+  c=$(bash -c "$CAP_CMD"); [ "$c" = BUSY ] && busy+=("this machine"); caps+=("${c:-1}")
+  for h in "${ALL_HOSTS[@]}"; do
+    c=$(rsh "$h" "$CAP_CMD" 2>/dev/null) || { say "ERROR: cannot read the capacity of $h" >&2; return 1; }
+    [ "$c" = BUSY ] && busy+=("$h"); caps+=("${c:-1}")
+  done
+  if [ ${#busy[@]} -gt 0 ]; then
+    say "ERROR: experiments are still running on: ${busy[*]} - free memory would be underestimated." >&2
+    say "Stop them first (cluster.sh stop, also from an older checkout), or write $WEIGHTS_FILE by hand." >&2
+    return 1
+  fi
+  w=$(IFS=,; echo "${caps[*]}")
+  { echo "# shard weights = parallel workers per machine (this machine first, then $HOSTS_FILE order)";
+    echo "# computed $(date -Iseconds); reused by every start - do not edit during a campaign, delete to recompute";
+    echo "$w"; } > "$WEIGHTS_FILE"
+  say "computed shard weights $w (this machine, then hosts in file order) -> $WEIGHTS_FILE" >&2
+  say "these weights are reused for every later start; delete the file only before a NEW campaign" >&2
+  echo "$w"
+}
 
 # background-run helpers (executed locally, or sent to a remote shell with declare -f)
 bg_alive() { [ -f "logs/cluster_$1.pid" ] && kill -0 "$(cat "logs/cluster_$1.pid")" 2>/dev/null; }
@@ -181,15 +221,21 @@ start)
     echo "$c"
   }
   rc=0
+  WSUF=""
+  if [ $EQUAL = 0 ] && [ $REMOTE = 1 ]; then
+    W="$(ensure_weights)" || exit 2
+    WSUF="@$W"
+    say "weighted shards: $W (use --equal for plain k/$N)"
+  fi
   if [ $LOCAL = 1 ]; then
-    spec="1/$N"; [ $REMOTE = 0 ] && spec="1/1"
+    spec="1/$N$WSUF"; [ $REMOTE = 0 ] && spec="1/1"
     if bg_alive "$NAME" && [ $FORCE = 0 ]; then say "local: '$NAME' is already running (stop it first)"; rc=1
     else bg_start "$NAME" "$(chain_for "$ROOT" "$spec" "$@")"
          say "local (shard $spec): started - output: $ROOT/logs/cluster_$NAME.out"; fi
   fi
   k=2
   for h in "${HOSTS[@]}"; do
-    chain="$(chain_for "~/$RDIR" "$k/$N" "$@")"
+    chain="$(chain_for "~/$RDIR" "$k/$N$WSUF" "$@")"
     res=$(rsh "$h" "cd ~/$RDIR || exit 4; $FUNCS; if bg_alive $NAME && [ $FORCE = 0 ]; then echo RUNNING; else bg_start $NAME '$chain'; echo STARTED; fi" 2>&1)
     case "$res" in
       *STARTED*) say "$h (shard $k/$N): started - output: ~/$RDIR/logs/cluster_$NAME.out on $h" ;;
@@ -210,6 +256,8 @@ status)
       echo "  $(basename "$g"): ok=$(grep -l '"status": "success"' "$g"*/result.json 2>/dev/null | wc -l) failed=$(grep -l '"status": "failed"' "$g"*/result.json 2>/dev/null | wc -l) running=$(ls "$g"*/started 2>/dev/null | wc -l)"
     done
   }
+  if [ -n "$(read_weights)" ]; then echo "shard weights (this machine, then hosts): $(read_weights)  [$WEIGHTS_FILE]"
+  else echo "shard weights: none yet (equal shards; computed at the next start)"; fi
   if [ $LOCAL = 1 ]; then echo "== local ($(hostname))"; show "$NAME"; fi
   for h in "${HOSTS[@]}"; do
     echo "== $h"
@@ -240,6 +288,30 @@ collect)
   "$BG_BIN" plan
   bash scripts/collect_logs.sh --campaign
   say "DONE - send the two newest files in $ROOT/reports/ (.txt and .tar.gz)" ;;
+# -----------------------------------------------------------------------------------------------------------
+import)
+  OLD="${1:-}"; [ -n "$OLD" ] || { say "usage: cluster.sh import OLD_VERSION   (e.g. 0.3.2)"; exit 2; }
+  OLD="${OLD#v}"
+  [ "$OLD" != "$VER" ] || { say "OLD_VERSION must differ from this version ($VER)"; exit 2; }
+  # copies finished jobs (result.json with status success) that are not yet present; prints "imported N kept M"
+  IMPORT_SH='src="$HOME/burstguard-v'"$OLD"'/results/v'"$OLD"'"; dst="$1/results/v'"$VER"'"; n=0; m=0
+    if [ ! -d "$src" ]; then echo "no $src"; exit 0; fi
+    for jd in "$src"/*/*/; do
+      jd="${jd%/}"; g="$(basename "$(dirname "$jd")")"; j="$(basename "$jd")"
+      case "$g" in _*|*_quick|*_quick_*) continue ;; esac
+      grep -q "\"status\": \"success\"" "$jd/result.json" 2>/dev/null || continue
+      if [ -f "$dst/$g/$j/result.json" ]; then m=$((m+1)); continue; fi
+      mkdir -p "$dst/$g"; rm -rf "$dst/$g/$j"; cp -a "$jd" "$dst/$g/$j"; n=$((n+1))
+    done
+    echo "imported $n finished jobs from v'"$OLD"' (already present: $m)"'
+  rc=0
+  if [ $LOCAL = 1 ]; then say "local: $(bash -s -- "$ROOT" <<< "$IMPORT_SH")"; fi
+  for h in "${HOSTS[@]}"; do
+    # the script travels on stdin (no quoting issues); $1 = this version's checkout on that machine
+    out=$(rsh "$h" "bash -s -- ~/$RDIR" <<< "$IMPORT_SH" 2>&1) || { rc=1; out="FAILED: $out"; }
+    say "$h: $out"
+  done
+  exit $rc ;;
 # -----------------------------------------------------------------------------------------------------------
 *)
   say "unknown command: $CMD (bash scripts/cluster.sh --help)"; exit 2 ;;
