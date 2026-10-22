@@ -66,7 +66,11 @@ PY=""
 for c in "${BG_PYTHON:-}" "$ROOT/.tools/python/cpython-3.12-linux-x86_64-gnu/bin/python3.12" python3.12 python3.11 python3.13 python3; do
   [ -n "$c" ] || continue
   if command -v "$c" >/dev/null 2>&1 && py_ok "$c" && "$c" -c 'import venv, ensurepip' 2>/dev/null; then
-    PY="$(command -v "$c")"; break
+    # resolve to the base interpreter: if a virtualenv (e.g. this checkout's .venv) is active, its python
+    # would be deleted together with the old .venv below
+    PY="$("$c" -c 'import os, sys; print(os.path.realpath(getattr(sys, "_base_executable", "") or sys.executable))')"
+    case "$PY" in "$ROOT"/.venv/*) PY=""; continue ;; esac
+    break
   fi
 done
 UV=""
@@ -95,6 +99,8 @@ echo "Python: $PY ($("$PY" -V 2>&1))"
 
 # ---------------------------------------------------------------- 2. venv
 step "2/6 Create .venv (version-stamped)"
+# permission-only changes (e.g. chmod -R 777 on the home dir) must not mark the checkout as modified
+[ -d "$ROOT/.git" ] && git -C "$ROOT" config core.fileMode false 2>/dev/null || true
 if [ "$RECREATE" = "1" ] && [ -d .venv ]; then echo "removing old .venv"; rm -rf .venv; fi
 if [ -d .venv ]; then
   OLD="$(cat .venv/burstguard_version 2>/dev/null || echo unknown)"

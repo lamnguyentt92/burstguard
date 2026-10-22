@@ -56,11 +56,11 @@ esac
 {
 echo "BURSTGUARD REPORT v$VER  $(date -Iseconds)"
 sec "SYSTEM"
-echo "version=$VER  git=$(git describe --tags --always --dirty 2>/dev/null) branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+echo "version=$VER  git=$(git -c core.fileMode=false describe --tags --always --dirty 2>/dev/null) branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 echo "checkout=$ROOT  shared=$SHARED"
 echo "host=$HOST  os=$(uname -srm)  $( [ -r /etc/os-release ] && . /etc/os-release && echo "${PRETTY_NAME:-}")"
 echo "cpu=$(nproc)  mem_total=$(awk '/MemTotal/{printf "%.1fGiB",$2/1048576}' /proc/meminfo)  mem_avail=$(awk '/MemAvailable/{printf "%.1fGiB",$2/1048576}' /proc/meminfo)  disk_free=$(df -h . | awk 'NR==2{print $4}')  shm=$(df -h /dev/shm 2>/dev/null | awk 'NR==2{print $2}')"
-GS="$(git status --porcelain 2>/dev/null | head -n 15)"; [ -n "$GS" ] && { echo "git status (modified files):"; echo "$GS" | sed 's/^/  /'; }
+GS="$(git -c core.fileMode=false status --porcelain 2>/dev/null | head -n 15)"; [ -n "$GS" ] && { echo "git status (modified files):"; echo "$GS" | sed 's/^/  /'; }
 if [ -x .venv/bin/python ]; then
   echo "venv: $(.venv/bin/python -V 2>&1), stamp=$(cat .venv/burstguard_version 2>/dev/null || echo none)"
   .venv/bin/python -m pip list 2>/dev/null | grep -Ei '^(flwr|ray|torch|granite-tsfm|transformers|peft|numpy|pandas|scipy|scikit-learn|matplotlib|burstguard) ' | sed 's/^/  /'

@@ -20,21 +20,8 @@ SYNTH = f"shared:data/processed/synthetic_d1.npz"
 
 
 def _quiet_libs() -> None:
-    import logging
-    import warnings
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-    warnings.filterwarnings("ignore", category=UserWarning)
-    root = logging.getLogger()
-    if not root.handlers:
-        h = logging.StreamHandler()
-        h.setLevel(logging.WARNING)
-        h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-        root.addHandler(h)
-    root.setLevel(logging.WARNING)
-    for name in ("transformers", "tsfm_public", "urllib3", "filelock", "ray", "huggingface_hub"):
-        logging.getLogger(name).setLevel(logging.ERROR)
-    logging.getLogger("flwr").propagate = False
+    from burstguard.logutil import quiet_logging
+    quiet_logging()
 
 
 def _cfg(a, ctx=None, need_data: bool = True):
@@ -141,13 +128,22 @@ def cmd_model_check(a, ctx):
     from burstguard import model as M
     from burstguard.sitedata import dataset_from_cfg, site_windows
     from burstguard.train import local_train
-    cfg, _ = _cfg(a, ctx)
+    cfg, _ = _cfg(a, ctx, need_data=False)
     t0 = time.time()
     _, info = M.load_model(cfg)
     print(f"model: {info} ({time.time() - t0:.1f}s)")
-    ds = dataset_from_cfg(cfg)
+    try:
+        ds = dataset_from_cfg(cfg)
+        src = f"{ds.meta.get('source')} data ({cfg['data']['path']})"
+    except FileNotFoundError:
+        # the parameter counts / update sizes do not depend on the data; timings use synthetic windows
+        from burstguard.data.store import Dataset
+        from burstguard.data.synthetic import generate
+        s, p, meta, b = generate(1, 1, seed=0)
+        ds = Dataset(series=s, probe=p, bounds=b, meta=meta)
+        src = "synthetic windows (Milan dataset not prepared yet - parameter counts are unaffected)"
     X, Y, _ = site_windows(ds, 0, "train", cfg)
-    print(f"site 0: {len(X)} training windows, X{X.shape} Y{Y.shape}")
+    print(f"site 0: {len(X)} training windows from {src}, X{X.shape} Y{Y.shape}")
     torch.set_num_threads(int(cfg["sim"]["torch_threads"]))
     report = {"model": info.__dict__, "modes": {}}
     for mode in ("head", "decoder", "lora", "full"):

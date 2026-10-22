@@ -29,7 +29,8 @@ def now_iso() -> str:
 def git_info() -> dict[str, str]:
     def _run(*args: str) -> str:
         try:
-            return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
+            # core.fileMode=false: permission-only changes (e.g. `chmod -R 777`) are not code changes
+            return subprocess.run(["git", "-C", str(ROOT), "-c", "core.fileMode=false", *args], capture_output=True,
                                   text=True, timeout=5).stdout.strip()
         except Exception:
             return ""

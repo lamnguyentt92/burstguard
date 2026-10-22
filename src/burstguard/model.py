@@ -24,17 +24,8 @@ class ModelInfo:
 
 
 def _silence_loaders() -> None:
-    try:
-        import tsfm_public.toolkit.get_model as gm
-        gm.LOGGER.setLevel(logging.ERROR)
-    except Exception:
-        pass
-    try:
-        from transformers.utils import logging as hl
-        hl.set_verbosity_error()
-        hl.disable_progress_bar()
-    except Exception:
-        pass
+    from burstguard.logutil import silence_tsfm
+    silence_tsfm()
 
 
 def _random_ttm(L: int, H: int, size: str = "small"):

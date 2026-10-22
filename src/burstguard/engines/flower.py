@@ -21,6 +21,8 @@ def _worker(cfg):
     global _WORKER
     if _WORKER is None:
         from burstguard.fedcore import SiteWorker
+        from burstguard.logutil import quiet_logging
+        quiet_logging()  # runs inside the Ray actor process
         _WORKER = SiteWorker(cfg)
     return _WORKER
 

@@ -31,6 +31,8 @@ def _init_worker(cfg: dict[str, Any]) -> None:
     isolate_environment()
     import warnings
     warnings.filterwarnings("ignore")
+    from burstguard.logutil import quiet_logging
+    quiet_logging()
     _WORKER = SiteWorker(cfg)
 
 

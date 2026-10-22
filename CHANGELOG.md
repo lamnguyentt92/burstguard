@@ -3,6 +3,22 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.2.1] — 2026-10-22
+
+Bug-fix release after the v0.2.0 report from vm-e. No change to experiments, configs or dependencies.
+
+### Fixed
+- `model-check` no longer requires the processed Milan dataset (falls back to synthetic windows for timings;
+  parameter counts and update sizes do not depend on the data).
+- Permission-only changes (e.g. `chmod -R 777`) no longer mark the checkout as modified: `setup_venv.sh` sets
+  `core.fileMode=false`, and run summaries / `collect_logs.sh` use `git -c core.fileMode=false`.
+- Flower SecAgg+ DEBUG lines from every Ray actor (granite-tsfm's `logging.basicConfig()` root handler) are silenced in
+  all worker processes (`burstguard.logutil.quiet_logging`).
+- The granite-tsfm `get_model` warning (`prediction_length (36) is not exactly equal ...`) is silenced; the previous code
+  imported the re-exported *function* instead of the module, so the logger was never reached.
+- `setup_venv.sh` failed when run with the old `.venv` activated (it picked the venv's own interpreter and then deleted
+  it); it now always resolves the base interpreter.
+
 ## [0.2.0] — 2026-10-22
 
 ### Changed (requested after the v0.1.1 VM report)
