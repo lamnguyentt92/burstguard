@@ -7,7 +7,9 @@
 #   bash scripts/collect_logs.sh --failed      # every run whose status is not success
 #   bash scripts/collect_logs.sh --run runs/<dir>
 #   bash scripts/collect_logs.sh --setup       # installation logs only
-#   bash scripts/collect_logs.sh --grid E3_defenses   # grid status + failed jobs of a grid
+#   bash scripts/collect_logs.sh --grid E3_defenses   # grid status + failed jobs (+ analysis) of a grid
+#   bash scripts/collect_logs.sh --grid P0_pilot,E0_calibration   # several grids
+#   bash scripts/collect_logs.sh --campaign    # every grid of this version + plan + paper artefacts
 #
 # Output (version in the file name):
 #   reports/bg_report_v<ver>_<host>_<time>.txt     -> paste or attach this file
@@ -25,6 +27,7 @@ while [ $# -gt 0 ]; do
     --run) MODE="run"; RUNSEL="${2:-}"; shift ;;
     --setup) MODE="setup" ;;
     --grid) MODE="grid"; GRID="${2:-}"; shift ;;
+    --campaign) MODE="campaign" ;;
     -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unsupported argument: $1"; exit 2 ;;
   esac
@@ -51,7 +54,16 @@ case "$MODE" in
             if [ ! -f "$s" ] || ! grep -q '"status": "success"' "$s"; then RUNS+=("${d%/}"); fi; done ;;
   run)    RUNS+=("$RUNSEL") ;;
   grid)   [ -f runs/LATEST ] && RUNS+=("$(cat runs/LATEST)") ;;
+  campaign) while IFS= read -r d; do RUNS+=("${d%/}"); done < <(ls -1dt runs/*/ 2>/dev/null | head -n 3) ;;
 esac
+# grid directories to report: --grid a,b (prefix match) or --campaign (all grids of this version)
+GDIRS=()
+if [ "$MODE" = "campaign" ]; then
+  for d in results/v"$VER"/*/; do b="$(basename "$d")"; [[ "$b" == _* ]] && continue; GDIRS+=("${d%/}"); done
+elif [ -n "$GRID" ]; then
+  IFS=',' read -ra _GL <<< "$GRID"
+  for g in "${_GL[@]}"; do for d in results/v"$VER"/"$g"*/; do [ -d "$d" ] && GDIRS+=("${d%/}"); done; done
+fi
 
 {
 echo "BURSTGUARD REPORT v$VER  $(date -Iseconds)"
@@ -105,7 +117,8 @@ for R in "${RUNS[@]:-}"; do
   done
 done
 
-for GD in $( [ -n "$GRID" ] && ls -d results/v*/"$GRID"* 2>/dev/null ); do
+for GD in "${GDIRS[@]:-}"; do
+  [ -n "$GD" ] || continue
   sec "GRID $GD"
   T=$(ls -d "$GD"/*/ 2>/dev/null | grep -vc _analysis)
   OK=$(grep -l '"status": "success"' "$GD"/*/result.json 2>/dev/null | wc -l)
@@ -126,7 +139,12 @@ PY
     echo "(no _analysis yet - run: burstguard analyze experiments/$(basename "$GD" | sed 's/_quick$//').toml$( [[ "$GD" == *_quick ]] && echo ' --quick'))"
   fi
 done
-if [ -n "$GRID" ]; then
+if [ "$MODE" = "campaign" ] && [ -d "results/v$VER/_paper" ]; then
+  sec "PAPER ARTEFACTS results/v$VER/_paper"
+  cat "results/v$VER/_paper/index.md" 2>/dev/null
+  echo "-- numbers.json (first 200 lines):"; head -n 200 "results/v$VER/_paper/numbers.json" 2>/dev/null
+fi
+if [ ${#GDIRS[@]} -gt 0 ]; then
   RG="$(ls -1t logs/run_grids_v*.log 2>/dev/null | head -n1)"
   [ -n "$RG" ] && { sec "run_grids log $RG (START/END lines + last 20 lines)"; grep -E 'START|END|ALL GRIDS|failed jobs' "$RG" | tail -n 30; tail -n 20 "$RG" | strip; }
 fi
@@ -145,9 +163,12 @@ cp "$TXT" "$PKG/"
 for R in "${RUNS[@]:-}"; do [ -n "$R" ] && [ -d "$R" ] || continue
   mkdir -p "$PKG/runs"; rsync -a --max-size=20m "$R" "$PKG/runs/" 2>/dev/null || cp -r "$R" "$PKG/runs/"; done
 ls -1t logs/setup_* logs/pip_freeze_* 2>/dev/null | head -n 3 | xargs -r -I{} cp {} "$PKG/" 2>/dev/null
-if [ -n "$GRID" ]; then for f in $(grep -l '"status": "failed"' results/v*/"$GRID"*/*/result.json 2>/dev/null | head -n 10); do
-  d="$(dirname "$f")"; mkdir -p "$PKG/grid_failed/$(basename "$d")"; cp "$d"/result.json "$d"/job.log "$d"/config.toml "$PKG/grid_failed/$(basename "$d")/" 2>/dev/null; done
-  for GD in $(ls -d results/v*/"$GRID"* 2>/dev/null); do
+if [ ${#GDIRS[@]} -gt 0 ]; then
+  for GD in "${GDIRS[@]}"; do
+    for f in $(grep -l '"status": "failed"' "$GD"/*/result.json 2>/dev/null | head -n 10); do
+      d="$(dirname "$f")"; mkdir -p "$PKG/grid_failed/$(basename "$d")"
+      cp "$d"/result.json "$d"/job.log "$d"/config.toml "$PKG/grid_failed/$(basename "$d")/" 2>/dev/null
+    done
     [ -d "$GD/_analysis" ] && { mkdir -p "$PKG/analysis/$(basename "$GD")"; cp -r "$GD/_analysis/." "$PKG/analysis/$(basename "$GD")/"; }
     # compact per-job results (no per-round metrics) so the analysis can be re-run offline
     mkdir -p "$PKG/results/$(basename "$GD")"
@@ -156,7 +177,9 @@ if [ -n "$GRID" ]; then for f in $(grep -l '"status": "failed"' results/v*/"$GRI
       cp "$rj" "$jo/result.json"
       [ -f "$jd/metrics.jsonl" ] && grep '"kind": "eval"' "$jd/metrics.jsonl" > "$jo/metrics.jsonl" 2>/dev/null
     done
-  done; fi
+  done
+  [ -d "results/v$VER/_paper" ] && { mkdir -p "$PKG/paper"; cp -r "results/v$VER/_paper/." "$PKG/paper/"; }
+fi
 [ -d "$RL" ] && { mkdir -p "$PKG/ray_logs"; find "$RL" -maxdepth 1 -type f \( -name '*.err' -o -name 'raylet.*' \) -size -5M -exec cp {} "$PKG/ray_logs/" \; 2>/dev/null; }
 tar -czf "${BASE}.tar.gz" -C "$TMP" "$(basename "$PKG")" 2>/dev/null
 rm -rf "$TMP"

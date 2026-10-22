@@ -265,12 +265,14 @@ def cmd_equivalence(a, ctx):
 def cmd_grid(a, ctx):
     from burstguard.experiments import grid as G
     if a.gcmd == "run":
-        res = G.run_grid(a.file, a.shard, quick=a.quick, retry_failed=not a.no_retry, max_jobs=a.max_jobs)
+        res = G.run_grid(a.file, a.shard, quick=a.quick, retry_failed=not a.no_retry, max_jobs=a.max_jobs,
+                         extra=G.parse_kv(a.extra), tag=a.tag,
+                         seeds=[int(x) for x in a.seeds.split(",")] if a.seeds else None)
         ctx.set(**res)
         if res["ran_failed"]:
             raise SystemExit(f"{res['ran_failed']} job(s) failed - see results/<...>/<job>/job.log and result.json")
     elif a.gcmd == "status":
-        st = G.grid_status(a.file, quick=a.quick, n_shards=a.shards)
+        st = G.grid_status(a.file, quick=a.quick, n_shards=a.shards, extra=G.parse_kv(a.extra), tag=a.tag)
         print(json.dumps(st, indent=2))
         ctx.save_json("grid_status.json", st)
     elif a.gcmd == "list":
@@ -284,6 +286,22 @@ def cmd_grid(a, ctx):
 def cmd_analyze(a, ctx):
     from burstguard.experiments import analyze as AN
     from burstguard.experiments import grid as G
+    if a.target == "all":  # every grid of this version that has results
+        done, missing = [], []
+        for f in sorted((ROOT / "experiments").glob("*.toml")):
+            g = G.load_grid(f)
+            gdir = G.grid_dir(g, quick=a.quick)
+            if not gdir.exists():
+                missing.append(g["grid"]["name"]); continue
+            try:
+                AN.analyze(gdir, split=a.split or g.get("analysis", {}).get("split", "test"),
+                           reference=g.get("analysis", {}).get("reference"), figures=not a.no_figures)
+                done.append(g["grid"]["name"])
+            except RuntimeError as e:
+                print(f"{g['grid']['name']}: {e}"); missing.append(g["grid"]["name"])
+        print(f"analysed: {', '.join(done) or '-'}; no results yet: {', '.join(missing) or '-'}")
+        ctx.set(analysed=done, missing=missing)
+        return
     ref = None
     target = resolve(a.target)
     if target.suffix == ".toml":
@@ -296,6 +314,27 @@ def cmd_analyze(a, ctx):
     res = AN.analyze(gdir, split=split, reference=ref, figures=not a.no_figures)
     ctx.set(**res)
     print((gdir / "_analysis" / "summary.md").read_text())
+
+
+def cmd_paper(a, ctx):
+    from burstguard.experiments import paper as PA
+    root = resolve(a.results) if a.results else RESULTS_DIR / VERSION_TAG
+    ds = resolve(a.dataset) if a.dataset else None
+    res = PA.export(root, out=resolve(a.out) if a.out else None, dataset=ds)
+    ctx.set(out=res["out"], made=len(res["made"]), skipped=len(res["skipped"]))
+    print((PA.Path(res["out"]) / "index.md").read_text())
+
+
+def cmd_plan(a, ctx):
+    from pathlib import Path as _P
+    from burstguard.experiments import plan as PL
+    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system"])
+                        for n in PL.TIERS.get(t, [])]
+    files = [resolve(n) if n.endswith(".toml") else ROOT / "experiments" / f"{n}.toml" for n in names]
+    files = [f for f in files if _P(f).exists()]
+    res = PL.plan(files, n_shards=a.shards)
+    ctx.save_json("plan.json", res)
+    ctx.set(total_left_hours_1vm=res["total_left_hours_1vm"], wall_hours_if_sharded=res["wall_hours_if_sharded"])
 
 
 def cmd_calibrate(a, ctx):
@@ -481,17 +520,31 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("file"); s.add_argument("--shard", default="1/1", help="k/n, e.g. 2/5 on the second of five VMs")
     s.add_argument("--quick", action="store_true"); s.add_argument("--no-retry", action="store_true")
     s.add_argument("--max-jobs", type=int, default=0)
+    s.add_argument("--extra", action="append", default=[], help="TESTING ONLY: extra override KEY=VALUE for every job")
+    s.add_argument("--tag", default="", help="TESTING ONLY: results go to results/<v>/<grid>_<tag>")
+    s.add_argument("--seeds", default="", help="TESTING ONLY: comma list replacing the grid's seeds")
     s.set_defaults(fn=cmd_grid, name="run")
     s = gp.add_parser("status", help="progress per shard"); s.add_argument("file")
     s.add_argument("--shards", type=int, default=1); s.add_argument("--quick", action="store_true")
+    s.add_argument("--extra", action="append", default=[]); s.add_argument("--tag", default="")
     s.set_defaults(fn=cmd_grid, name="status")
     s = gp.add_parser("list", help="list jobs"); s.add_argument("file"); s.add_argument("--shard", default="")
     s.add_argument("--quick", action="store_true"); s.set_defaults(fn=cmd_grid, name="list")
 
     s = sub.add_parser("analyze", help="tables, statistics and figures for a grid")
-    s.add_argument("target", help="grid .toml or results directory"); s.add_argument("--split", default=None)
+    s.add_argument("target", help="grid .toml, results directory, or 'all'"); s.add_argument("--split", default=None)
     s.add_argument("--quick", action="store_true"); s.add_argument("--no-figures", action="store_true")
     s.set_defaults(fn=cmd_analyze)
+    s = sub.add_parser("paper", help="paper tables/figures/numbers from all finished grids")
+    s.add_argument("--results", default="", help="results root (default results/<version>)")
+    s.add_argument("--dataset", default="shared:data/processed/milan_d1.npz")
+    s.add_argument("--out", default="", help="output dir (default <results>/_paper)")
+    s.set_defaults(fn=cmd_paper)
+    s = sub.add_parser("plan", help="estimate remaining campaign time from finished jobs")
+    s.add_argument("grids", nargs="*", help="grid names or files (default: all tiers)")
+    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system")
+    s.add_argument("--shards", type=int, default=5)
+    s.set_defaults(fn=cmd_plan)
     s = sub.add_parser("calibrate", help="BurstGuard threshold from monitor-mode clean runs")
     s.add_argument("target"); s.add_argument("--quick", action="store_true")
     s.add_argument("--margin", type=float, default=1.5, help="suggested threshold = margin x largest clean score")

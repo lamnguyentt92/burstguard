@@ -9,8 +9,9 @@ from burstguard import DATA_FORMAT
 from burstguard.paths import resolve
 
 AGGREGATORS = {"fedavg", "clip_noise", "krum", "multikrum", "trimmed", "median", "flame", "fltrust"}
-SHORTCUTS = {"lora_reset": ("fedavg", ["lora_reset"]), "burstguard": ("fedavg", ["burstguard"])}
-ADDONS = {"lora_reset", "burstguard"}
+SHORTCUTS = {"lora_reset": ("fedavg", ["lora_reset"]), "burstguard": ("fedavg", ["burstguard"]),
+             "probe_screen": ("fedavg", ["probe_screen"])}
+ADDONS = {"lora_reset", "burstguard", "probe_screen"}
 # Aggregators that only need the (secure) sum of updates.
 AGGREGATE_ONLY = {"fedavg", "clip_noise"}
 ATTACKS = {"none", "poison", "scale", "constrain_scale", "neurotoxin", "adaptive"}
@@ -98,6 +99,8 @@ DEFAULTS: dict[str, Any] = {
         "multikrum_m": 0,        # 0 = n - f
         "trim_beta": 0.1,
         "flame_lambda": 0.001,
+        "probe_tol": 0.05,       # probe_screen: reject if the clean probe error grows by more than 5 %
+        "probe_n": 256,          # probe_screen: number of public probe windows
         "fltrust_epochs": 1,
         "lora_reset_every": 5,
         "lora_reset_frac": 0.01,

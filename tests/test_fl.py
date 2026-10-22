@@ -36,6 +36,7 @@ def _cfg(data_path, extra):
     ['attack.type="neurotoxin"', 'defense.name="fltrust"'],
     ['attack.type="constrain_scale"', "secagg.enabled=true", "secagg.groups=2", 'defense.name="burstguard"'],
     ['train.peft="lora"', 'attack.type="poison"', 'defense.name="lora_reset"', "defense.lora_reset_every=1"],
+    ['attack.type="scale"', 'defense.name="probe_screen"', "secagg.enabled=true"],
 ])
 def test_local_engine_runs(tmp_path, data_path, extra):
     from burstguard.engines.local import run_local

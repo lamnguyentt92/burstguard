@@ -2,7 +2,10 @@
 [grid]
 name = "E2_attacks"
 base_config = "configs/base.toml"
-seeds = [0, 1, 2, 3, 4]
+seeds = [0, 1, 2]
+
+[fixed]
+"fl.save_model" = true     # final models for the qualitative figure (burstguard paper)
 
 [factors]
 "attack.type" = ["none", "poison", "scale", "constrain_scale"]

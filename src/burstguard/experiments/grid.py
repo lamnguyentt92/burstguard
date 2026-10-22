@@ -56,7 +56,19 @@ def _matches(ov: dict[str, Any], cond: dict[str, Any]) -> bool:
     return all(ov.get(k) == v for k, v in cond.items())
 
 
-def expand(g: dict[str, Any], quick: bool = False) -> list[dict[str, Any]]:
+def parse_kv(items: list[str] | None) -> dict[str, Any]:
+    """["a.b=3", "c.d=head"] -> {"a.b": 3, "c.d": "head"} (TOML values, bare strings allowed)."""
+    out: dict[str, Any] = {}
+    for it in items or []:
+        k, _, v = it.partition("=")
+        try:
+            out[k.strip()] = tomllib.loads(f"x = {v.strip()}")["x"]
+        except Exception:
+            out[k.strip()] = v.strip().strip("\"'")
+    return out
+
+
+def expand(g: dict[str, Any], quick: bool = False, extra: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     gr = g["grid"]
     factors = g.get("factors", {})
     keys = sorted(factors)
@@ -75,6 +87,8 @@ def expand(g: dict[str, Any], quick: bool = False) -> list[dict[str, Any]]:
                 ov.update(g.get("quick", {"fl.rounds": 2, "fl.eval_every": 1, "data.max_train_windows": 200,
                                           "data.max_eval_windows": 48, "burstguard.steps": 3,
                                           "burstguard.restarts": 1, "burstguard.probe_windows": 16}))
+            if extra:
+                ov.update(extra)
             key = json.dumps(ov, sort_keys=True)
             if key in seen:
                 continue
@@ -101,8 +115,8 @@ def shard(jobs: list[dict], k: int, n: int) -> list[dict]:
     return [j for i, j in enumerate(order) if i % n == k - 1]
 
 
-def grid_dir(g: dict[str, Any], quick: bool = False) -> Path:
-    return RESULTS_DIR / VERSION_TAG / (g["grid"]["name"] + ("_quick" if quick else ""))
+def grid_dir(g: dict[str, Any], quick: bool = False, tag: str = "") -> Path:
+    return RESULTS_DIR / VERSION_TAG / (g["grid"]["name"] + ("_quick" if quick else "") + (f"_{tag}" if tag else ""))
 
 
 def job_status(jdir: Path) -> str:
@@ -187,12 +201,15 @@ def _run_baseline(kind: str, cfg: dict[str, Any], log) -> dict[str, Any]:
 
 
 def run_grid(path: str, shard_spec: str = "1/1", quick: bool = False, retry_failed: bool = True,
-             max_jobs: int = 0, log=print) -> dict[str, Any]:
+             max_jobs: int = 0, extra: dict[str, Any] | None = None, tag: str = "", seeds: list[int] | None = None,
+             log=print) -> dict[str, Any]:
     g = load_grid(path)
-    jobs = expand(g, quick)
+    if seeds:
+        g["grid"]["seeds"] = list(seeds)
+    jobs = expand(g, quick, extra)
     k, n = (int(x) for x in shard_spec.split("/"))
     mine = shard(jobs, k, n)
-    gdir = grid_dir(g, quick)
+    gdir = grid_dir(g, quick, tag)
     gdir.mkdir(parents=True, exist_ok=True)
     (gdir / "grid.json").write_text(json.dumps({"version": __version__, "grid": g["grid"], "n_jobs": len(jobs),
                                                 "source": g["_path"]}, indent=2, default=str))
@@ -217,10 +234,11 @@ def run_grid(path: str, shard_spec: str = "1/1", quick: bool = False, retry_fail
     return summary
 
 
-def grid_status(path: str, quick: bool = False, n_shards: int = 1) -> dict[str, Any]:
+def grid_status(path: str, quick: bool = False, n_shards: int = 1, extra: dict[str, Any] | None = None,
+                tag: str = "") -> dict[str, Any]:
     g = load_grid(path)
-    jobs = expand(g, quick)
-    gdir = grid_dir(g, quick)
+    jobs = expand(g, quick, extra)
+    gdir = grid_dir(g, quick, tag)
     by_shard = {}
     for k in range(1, n_shards + 1):
         counts: dict[str, int] = {}

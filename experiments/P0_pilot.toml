@@ -1,0 +1,35 @@
+# P0 - pilot on the real data (run FIRST, ~1 h on 5 VMs): does the burst backdoor take hold under FedAvg, how do
+# BurstGuard scores separate clean from attacked rounds, and how long does a round take (for `burstguard plan`).
+# Monitor mode: BurstGuard scores every round but never rejects, so the attack is unfiltered (= FedAvg) while
+# the detection scores are recorded. Send: bash scripts/collect_logs.sh --grid P0_pilot  (after burstguard analyze)
+[grid]
+name = "P0_pilot"
+base_config = "configs/base.toml"
+seeds = [0]
+
+[fixed]
+"fl.rounds" = 20
+"fl.eval_every" = 5
+"defense.name" = "burstguard"
+"burstguard.mode" = "monitor"
+"fl.save_model" = true
+
+[factors]
+"train.peft" = ["head", "lora"]
+"attack.type" = ["none", "poison", "scale", "constrain_scale"]
+
+
+# stronger attacker (more poisoned windows, longer local training) - used if the default barely implants
+[[include]]
+"train.peft" = "head"
+"attack.type" = "scale"
+"attack.poison_frac" = 0.5
+"attack.local_epochs" = 10
+[[include]]
+"train.peft" = "lora"
+"attack.type" = "scale"
+"attack.poison_frac" = 0.5
+"attack.local_epochs" = 10
+
+[analysis]
+split = "test"

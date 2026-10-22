@@ -190,3 +190,16 @@ def test_burstguard_replay_rule():
     attack[10][2] = (3.0, 3.5)                                          # one injected unit
     flags = replay_flags(attack, 0.15, 0.5, 5.0, 5, anchor_adaptive=True)
     assert flags[10] == [False, False, True, False] and sum(sum(f) for f in flags) == 1
+
+
+def test_plan_cost_model():
+    from burstguard.experiments import plan as PL
+    fin = [{"peft": "head", "kind": "fl", "rounds": 30, "bg": False, "units": 1, "engine": "local", "wall_s": 300.0},
+           {"peft": "head", "kind": "fl", "rounds": 30, "bg": True, "units": 1, "engine": "local", "wall_s": 900.0},
+           {"peft": "lora", "kind": "fl", "rounds": 20, "bg": False, "units": 1, "engine": "local", "wall_s": 800.0}]
+    m = PL.fit(fin)
+    assert m["c"][("head", "fl")] == 10.0 and m["s_bg"] == 20.0
+    assert PL.cost_per_round(m, "decoder", "fl") == pytest.approx(40.0 * 0.65)   # derived from LoRA via ratios
+    s = PL.job_seconds(m, {"train.peft": "head", "fl.rounds": 30, "defense.name": "burstguard",
+                           "secagg.enabled": True, "secagg.groups": 5}, "fl")
+    assert s == pytest.approx(30 * (10 + 20 * 5))

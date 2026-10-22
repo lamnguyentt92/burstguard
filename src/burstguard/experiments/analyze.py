@@ -100,8 +100,9 @@ def holm(pvals: list[float]) -> list[float]:
     return adj.tolist()
 
 
-def analyze(gdir: Path, split: str = "test", reference: dict[str, Any] | None = None,
-            figures: bool = True, log=print) -> dict[str, Any]:
+def build_rows(gdir: Path, split: str = "test", log=print) -> tuple[list[dict], list[str], list[dict]]:
+    """Group successful jobs of a grid by configuration (all overrides except seed) and compute the statistics.
+    Returns (rows, varying keys, jobs)."""
     jobs = []
     for jd in sorted(p for p in gdir.iterdir() if p.is_dir() and not p.name.startswith("_")):
         if not (jd / "result.json").exists():
@@ -163,19 +164,27 @@ def analyze(gdir: Path, split: str = "test", reference: dict[str, Any] | None = 
         kept = [k for k in kept if k is not None]
         if kept:
             row["malicious_kept_rate"] = float(np.mean(kept))
-        for k in ("round_wall_s_mean", "server_defense_cpu_s_mean", "update_bytes"):
+        for k in ("round_wall_s_mean", "server_defense_cpu_s_mean", "update_bytes", "client_train_cpu_s_mean",
+                  "wall_s"):
             vals = [j["res"].get(k) for j in js if j["res"].get(k) is not None]
             if vals:
                 row[k] = float(np.mean(vals))
         row["_jobs"] = js
         rows.append(row)
     _detection_vs_clean(rows, varying)
+    return rows, varying, jobs
+
+
+def analyze(gdir: Path, split: str = "test", reference: dict[str, Any] | None = None,
+            figures: bool = True, log=print) -> dict[str, Any]:
+    rows, varying, jobs = build_rows(gdir, split, log)
     tests = _paired_tests(rows, varying, reference) if reference else []
     out = gdir / "_analysis"
     (out / "figures").mkdir(parents=True, exist_ok=True)
     cols = varying + ["n_seeds"] + [c for m in METRICS for c in (m, f"{m}_lo", f"{m}_hi")] + \
         ["lifespan_l50", "lifespan_censored", "tpr_rounds", "fpr_rounds", "tpr_units", "fpr_units", "auc_units",
-         "auc_vs_clean", "fpr_clean", "n_units_pos", "n_units_neg", "score_max_clean", "score_max_attack", "malicious_kept_rate", "screen_cpu_s_mean", "server_defense_cpu_s_mean", "round_wall_s_mean", "update_bytes"]
+         "auc_vs_clean", "fpr_clean", "n_units_pos", "n_units_neg", "score_max_clean", "score_max_attack", "malicious_kept_rate", "screen_cpu_s_mean", "server_defense_cpu_s_mean",
+         "round_wall_s_mean", "client_train_cpu_s_mean", "update_bytes", "wall_s"]
     cols = [c for c in cols if any(c in r for r in rows)]
     with open(out / "summary.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")

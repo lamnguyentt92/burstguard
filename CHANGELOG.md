@@ -3,6 +3,30 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.0] — 2026-10-22
+
+Campaign release: everything needed to produce the paper's numbers in 7 days on 5 VMs. Algorithms unchanged.
+
+### Added
+- `experiments/P0_pilot.toml`: 10-job pilot (head/LoRA x 4 attack settings + a stronger scale attacker, BurstGuard in monitor mode, 20 rounds)
+  to check backdoor success, detection scores and round times on the real data before the campaign.
+- `burstguard plan`: per-round cost model fitted on finished jobs (falls back to model-check ratios and priors),
+  remaining hours per grid and per shard, total wall time for N VMs.
+- `burstguard paper`: LaTeX tables (dataset, clean accuracy, vulnerability, defenses head/LoRA, ablation, system),
+  figures (lifespan, secure-aggregation groups, sensitivity heatmaps, ROC, screening cost, qualitative forecast from
+  saved models) and `numbers.json`, with `index.md` listing missing artefacts.
+- `burstguard analyze all`; `scripts/run_grids.sh --tier pilot|calibration|1|2|system`;
+  `scripts/sync_results.sh HOST...` (rsync results from the other VMs);
+  `collect_logs.sh --grid a,b` and `--campaign` (all grids + plan + paper artefacts, compact results in the bundle).
+- Defense baseline `probe_screen`: rejects the (secure) aggregate when the clean error on public probe windows grows
+  by more than `defense.probe_tol` (5 %); reported with the same detection metrics as BurstGuard. Added to E3.
+- Client training CPU per round (`client_train_cpu_s_mean`) and job wall time in the analysis.
+- Testing-only grid options `--extra KEY=VALUE`, `--tag`, `--seeds`.
+
+### Changed
+- E2 uses 3 seeds (was 5); E2 and E3 save final models (`fl.save_model`) for the qualitative figure.
+- Analysis refactored into `build_rows()` (shared by `analyze`, `paper`).
+
 ## [0.2.2] — 2026-10-22
 
 Fix for the v0.2.1 report from vm-e (`data download`: HTTP 400 on datafile 2674255).

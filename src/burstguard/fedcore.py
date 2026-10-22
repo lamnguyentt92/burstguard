@@ -131,8 +131,12 @@ class ServerLogic:
         self.prev_delta: np.ndarray | None = None
         self.bg = None
         self._probe = None
-        if "burstguard" in self.addons or d["aggregator"] == "fltrust":
+        if "burstguard" in self.addons or "probe_screen" in self.addons or d["aggregator"] == "fltrust":
             self._probe = probe_windows(self.ds, cfg)
+        self._ps_idx = None
+        if "probe_screen" in self.addons:
+            n = min(int(d["probe_n"]), len(self._probe[0]))
+            self._ps_idx = np.sort(np.random.default_rng(66).choice(len(self._probe[0]), size=n, replace=False))
         if "burstguard" in self.addons:
             from burstguard.defenses.burstguard import BurstGuard
             self.bg = BurstGuard(cfg, self.model, self._probe[0], self._probe[2], self.theta0)
@@ -169,6 +173,25 @@ class ServerLogic:
         g0 = M.get_vec(self.model) - theta
         M.set_vec(self.model, theta)
         return g0
+
+    # ---- probe-loss check (baseline screen that also works on the secure aggregate)
+    def _probe_err(self, theta: np.ndarray) -> float:
+        X, Y, S = self._probe
+        idx = self._ps_idx
+        M.set_vec(self.model, theta)
+        P = M.predict(self.model, X[idx], freq=self.cfg["model"]["freq"])
+        return float(np.mean(np.abs(P - Y[idx]).mean(axis=(1, 2)) / np.maximum(S[idx], 1e-6)))
+
+    def _probe_screen(self, theta: np.ndarray, cand: np.ndarray) -> tuple[bool, dict]:
+        t0 = time.process_time()
+        e0, e1 = self._probe_err(theta), self._probe_err(cand)
+        rel = e1 / max(e0, 1e-12) - 1.0
+        tol = float(self.cfg["defense"]["probe_tol"])
+        flag = bool(rel > tol)
+        info = {"scores": [rel], "score_last": [rel], "score_anchor": [None], "threshold": tol, "flags": [flag],
+                "would_flag": [flag], "cpu_s": time.process_time() - t0, "level": "aggregate",
+                "probe_err_last": e0, "probe_err_cand": e1}
+        return not flag, info
 
     # ---- aggregation
     def aggregate(self, rnd: int, theta: np.ndarray, results: list[dict],
@@ -223,6 +246,10 @@ class ServerLogic:
             flags, binfo = self.bg.screen(theta, [delta], rnd)
             rec["burstguard"] = {**binfo, "level": "aggregate"}
             accepted = not flags[0]
+        if accepted and self._ps_idx is not None:
+            ok, pinfo = self._probe_screen(theta, theta + delta)
+            rec["probe_screen"] = pinfo
+            accepted = ok
         new_theta = theta + delta if accepted else theta.copy()
         if self.bg is not None and accepted:
             bi = rec.get("burstguard", {})

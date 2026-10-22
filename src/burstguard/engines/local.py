@@ -99,6 +99,10 @@ def run_local(cfg: dict[str, Any], run_dir: Path, log=print) -> dict[str, Any]:
                 return f"{max(v):.3f}" if v else "-"
             bgs = (f" bg_last={_mx(bgi['score_last'])}/{bgi['threshold']:.2f} bg_anchor={_mx(bgi['score_anchor'])}/"
                    f"{bgi['threshold_anchor']:.2f}{' FLAG' if any(bgi['would_flag']) else ''}") if bgi else ""
+            psi = rec.get("probe_screen")
+            if psi:
+                bgs += (f" probe_err={psi['probe_err_cand']:.4f} (last {psi['probe_err_last']:.4f}, "
+                        f"+{100 * psi['scores'][0]:.1f}%/{100 * psi['threshold']:.0f}%){' FLAG' if psi['flags'][0] else ''}")
             log(f"[server] round {rnd}/{R}: attack={'on' if rec['attack_active'] else 'off'} "
                 f"accepted={rec['accepted']} loss={np.mean([r['info']['train_loss'] for r in results]):.4f} "
                 f"{rec['round_wall_s']:.1f}s{bgs}")

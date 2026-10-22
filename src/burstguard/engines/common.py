@@ -77,6 +77,13 @@ def auc(scores: list[float], labels: list[int]) -> float | None:
     return float((r[y == 1].sum() - npos * (npos + 1) / 2) / (npos * nneg))
 
 
+def _client_cpu(rounds: list[dict]) -> float | None:
+    """Mean local-training CPU seconds per benign client and round (edge-cost figure)."""
+    v = [c.get("train_cpu_s") for r in rounds for c in (r.get("clients") or [])
+         if c.get("role", "benign") == "benign" and c.get("train_cpu_s") is not None]
+    return float(np.mean(v)) if v else None
+
+
 def summarize(run_dir: Path) -> dict[str, Any]:
     """Final metrics + series used by the analysis (also works on partial runs)."""
     rounds, evals = [], []
@@ -92,6 +99,9 @@ def summarize(run_dir: Path) -> dict[str, Any]:
     for e in evals:
         if e["split"] == (evals[0]["split"] if evals else "val") and e.get("asr_mean") is not None:
             series["round"].append(e["round"]); series["asr"].append(e.get("asr_mean")); series["mase"].append(e.get("mase_daily_mean"))
+    for r in rounds:  # one screening record per round: BurstGuard, else the probe-loss baseline
+        if not r.get("burstguard") and r.get("probe_screen"):
+            r["burstguard"] = r["probe_screen"]
     bg = [r.get("burstguard") for r in rounds if r.get("burstguard")]
     att = [r for r in rounds if r.get("attack_active")]
     clean = [r for r in rounds if not r.get("attack_active")]
@@ -131,4 +141,5 @@ def summarize(run_dir: Path) -> dict[str, Any]:
     return {"rounds_done": len(rounds), "final": final, "series": series, "detection": det, "filtering": filt,
             "round_wall_s_mean": float(np.mean([r["round_wall_s"] for r in rounds])) if rounds else None,
             "server_defense_cpu_s_mean": float(np.mean([r["server_defense_cpu_s"] for r in rounds])) if rounds else None,
+            "client_train_cpu_s_mean": _client_cpu(rounds),
             "update_bytes": rounds[-1].get("update_bytes") if rounds else None}
