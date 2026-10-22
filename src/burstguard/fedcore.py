@@ -264,6 +264,7 @@ class ServerLogic:
         sel_units = set(rec["aggregator"].get("selected", []))
         rec["selected_has_malicious"] = any(rec["unit_has_malicious"][i] for i in sel_units)
         accepted = delta is not None
+        rec["screened_has_malicious"] = rec["selected_has_malicious"]  # label of the aggregate-level screen
         if accepted and self.bg is not None and self.cfg["burstguard"]["screen_resolved"] == "aggregate":
             flags, binfo = self.bg.screen(theta, [delta], rnd)
             rec["burstguard"] = {**binfo, "level": "aggregate"}

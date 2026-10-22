@@ -124,7 +124,8 @@ def summarize(run_dir: Path) -> dict[str, Any]:
         if b.get("level") == "units":
             labels = [bool(x) and bool(r.get("attack_active")) for x in r.get("unit_has_malicious", [])]
         else:
-            labels = [bool(r.get("selected_has_malicious")) and bool(r.get("attack_active"))]
+            labels = [bool(r.get("screened_has_malicious", r.get("selected_has_malicious")))
+                      and bool(r.get("attack_active"))]
         for i, y in enumerate(labels[:len(b.get("scores", []))]):
             sl, sa = b["score_last"][i], b["score_anchor"][i]
             units.append([r["round"], round(float(b["scores"][i]), 5), None if sl is None else round(float(sl), 5),

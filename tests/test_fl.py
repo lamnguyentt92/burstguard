@@ -58,4 +58,4 @@ def test_burstguard_regroup_path(tmp_path, data_path):
     rounds = [r for r in rounds if r["kind"] == "round"]
     rg = [r["burstguard_regroup"] for r in rounds if r.get("burstguard_regroup")]
     assert rg and all(len(x["unit_sites"]) == 2 for x in rg) and not any(r["accepted"] for r in rounds)
-    assert res["detection"]["regroup_rounds"] == len(rg)
+    assert res["detection"]["regroup_rounds"] == len(rg) and res["detection"]["tpr_units"] == 1.0

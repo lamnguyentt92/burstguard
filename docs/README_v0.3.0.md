@@ -216,7 +216,7 @@ Gỡ v0.3.0: `rm -rf ~/burstguard-v0.3.0` (không ảnh hưởng v0.1.1 và dữ
 cd ~/burstguard-v0.3.0 && source .venv/bin/activate
 burstguard doctor            # PASS/WARN/FAIL; FAIL phải sửa
 burstguard smoke             # ~1–2 phút: 8 bước gồm cả Flower + SecAgg+ thật
-python -m pytest -q          # 21 bài kiểm thử (~1–2 phút)
+python -m pytest -q          # 22 bài kiểm thử (~1–2 phút)
 burstguard model-download    # tải TTM-R2 vào ~/burstguard-shared/hf (bỏ qua nếu đã tải ở bản trước)
 burstguard model-check -c configs/base.toml   # số tham số/KiB mỗi cập nhật của 4 chế độ (chưa cần dữ liệu Milan)
 ```
@@ -346,6 +346,7 @@ pipeline, **không** phải số liệu cho bài (số liệu bài phải lấy 
 |---|---|---|---|
 | Sạch + BurstGuard | 0,813 | 0,000 | 0/8 vòng bị loại (điểm last ≤ 0,071 < 0,15; điểm anchor trôi 0,04 → 0,38) |
 | `scale` (2 site độc hại) + SecAgg 5 nhóm + BurstGuard | 0,811 | 0,000 | gắn cờ đúng 16/16 nhóm có site độc hại, 0/24 nhóm lành (AUC 1,0); điểm nhóm độc 8,8–77 |
+| `scale` + BurstGuard, 1 mô hình tổng hợp, `on_flag = regroup` (v0.3.0) | 0,808 | 0,000 | gắn cờ 8/8 vòng; mỗi vòng gom lại 5 nhóm, loại đúng 16/16 nhóm có site độc, 0/24 nhóm lành bị loại; mô hình vẫn học như khi sạch |
 | `scale` (2 site độc hại) + FedAvg, không phòng thủ | 1,379 | 0,379 | — (ASR val tăng 0,008 → 0,383 qua 8 vòng) |
 
 Điểm anchor tăng đều theo vòng trên huấn luyện lành tính → v0.3.0 dùng ngưỡng anchor thích nghi (`anchor_adaptive`).
