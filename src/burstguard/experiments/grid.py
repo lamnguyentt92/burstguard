@@ -7,13 +7,16 @@ Grid file (experiments/*.toml):
     base_config = "configs/base.toml"
     seeds = [0, 1, 2, 3, 4]
     [fixed]                       # overrides for every job
-    "fl.rounds" = 30
+    "fl.rounds" = 20
     [factors]                     # cartesian product
     "train.peft" = ["head", "lora"]
     "defense.name" = ["fedavg", "flame"]
-    [[exclude]]                   # drop jobs matching every key
+    [[exclude]]                   # drop jobs matching every key (factor/variant/fixed keys and run.seed)
     "defense.name" = "lora_reset"
     "train.peft" = "head"
+    [[exclude]]                   # e.g. fewer seeds for the expensive mode
+    "train.peft" = "lora"
+    "run.seed" = 2
     [[variants]]                  # optional: each variant is crossed with every factor combination
     "burstguard.steps" = 5        # (one-factor-at-a-time ablations; an empty table = the default)
     [[include]]                   # extra single configurations
@@ -38,7 +41,6 @@ from burstguard import EXPERIMENT_CODE, VERSION_TAG, __version__
 from burstguard.config import dump_toml, load_config
 from burstguard.paths import RESULTS_DIR, resolve
 
-PEFT_COST = {"head": 1.0, "decoder": 4.0, "lora": 8.0, "full": 8.0}
 KINDS = {"fl", "zeroshot", "local_only", "centralized"}
 
 
@@ -78,11 +80,13 @@ def expand(g: dict[str, Any], quick: bool = False, extra: dict[str, Any] | None 
     combos = [{**c, **v} for c in combos for v in variants]
     combos += [dict(x) for x in g.get("include", [])]
     jobs, seen = [], set()
+    excludes = g.get("exclude", [])
+    bview = base_view(g)
     for combo in combos:
-        if any(_matches(combo, ex) for ex in g.get("exclude", [])):
-            continue
         for seed in gr.get("seeds", [0]):
             ov = {**g.get("fixed", {}), **combo, "run.seed": int(seed)}
+            if any(_matches(ov, ex) for ex in excludes):
+                continue
             if quick:  # shrink everything except what the configuration itself varies
                 q = g.get("quick", {"fl.rounds": 2, "fl.eval_every": 1, "data.max_train_windows": 200,
                                     "data.max_eval_windows": 48, "burstguard.steps": 3,
@@ -96,16 +100,42 @@ def expand(g: dict[str, Any], quick: bool = False, extra: dict[str, Any] | None 
             seen.add(key)
             jid = hashlib.sha1(key.encode()).hexdigest()[:10]
             label = "_".join(f"{k.split('.')[-1]}={v}" for k, v in sorted(combo.items()))
+            eff = {**bview, **ov}     # base-config values for the keys that drive the cost (rounds, ...)
+            kind = ov.get("job.kind", "fl")
             jobs.append({"id": jid, "label": f"{label}_seed={seed}".strip("_"), "overrides": ov,
-                         "kind": ov.get("job.kind", "fl"), "cost": _cost(ov)})
+                         "effective": eff, "kind": kind, "cost": _cost(eff, kind)})
     return jobs
 
 
-def _cost(ov: dict[str, Any]) -> float:
-    c = PEFT_COST.get(ov.get("train.peft", "head"), 1.0) * float(ov.get("fl.rounds", 30))
-    if "burstguard" in str(ov.get("defense.name", "")) or "burstguard" in str(ov.get("defense.addons", "")):
-        c += 0.5 * float(ov.get("fl.rounds", 30)) * max(1, int(ov.get("secagg.groups", 1)))
-    return c
+# keys of the resolved configuration that the cost model uses (experiments/plan.py)
+COST_KEYS = ("fl.rounds", "train.peft", "attack.type", "attack.start_round", "attack.end_round",
+             "attack.local_epochs", "defense.name", "defense.addons", "burstguard.mode", "burstguard.on_flag",
+             "burstguard.regroup_groups", "burstguard.steps", "burstguard.restarts", "burstguard.probe_windows",
+             "burstguard.both_directions", "secagg.enabled", "secagg.groups", "engine.name")
+
+
+def cost_view(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Flat {"section.key": value} view of the cost-relevant keys of a resolved configuration."""
+    out: dict[str, Any] = {}
+    for k in COST_KEYS:
+        a, _, b = k.partition(".")
+        if isinstance(cfg.get(a), dict) and b in cfg[a]:
+            out[k] = cfg[a][b]
+    return out
+
+
+def base_view(g: dict[str, Any]) -> dict[str, Any]:
+    """Cost-relevant values of the grid's base configuration (keys not overridden by a job keep these)."""
+    try:
+        return cost_view(load_config(g["grid"].get("base_config")))
+    except Exception:
+        return {}
+
+
+def _cost(eff: dict[str, Any], kind: str = "fl") -> float:
+    """Relative cost (seconds on the reference machine from the prior cost model) used to balance shards."""
+    from burstguard.experiments.plan import PRIOR_MODEL, job_seconds
+    return job_seconds(PRIOR_MODEL, eff, kind)
 
 
 def parse_shard(spec: str) -> tuple[int, int, list[float] | None]:
@@ -197,6 +227,7 @@ def run_job(g: dict[str, Any], job: dict[str, Any], jdir: Path, log=print) -> di
                            "label": job["label"], "overrides": job["overrides"], "kind": job["kind"]}
     try:
         cfg = job_config(g, job)
+        res["effective"] = cost_view(cfg)     # resolved cost-relevant keys (burstguard plan)
         (jdir / "config.toml").write_text(dump_toml(cfg))
         # hash of the base config file: analysis warns when VMs ran the same grid with different base configs
         bc = g["grid"].get("base_config")

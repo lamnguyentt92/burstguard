@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from burstguard.engines.common import JsonlWriter, auto_workers, slim_eval, summarize
+from burstguard.engines.common import JsonlWriter, auto_workers, cpus_available, slim_eval, summarize
 from burstguard.fedcore import ServerLogic, SiteWorker
 
 _WORKER: SiteWorker | None = None
@@ -60,13 +60,17 @@ def run_local(cfg: dict[str, Any], run_dir: Path, log=print) -> dict[str, Any]:
         f"workers={workers}")
     write("setup", model=server.model_info.__dict__, n_trainable=int(theta.size), update_bytes=nbytes,
           malicious=server.malicious, benign=server.benign, workers=workers, engine="local")
+    # malicious clients train longer (attack.local_epochs) and are the stragglers of a round: they are dispatched
+    # first and get spare CPU threads (sim.malicious_threads, 0 = auto: CPUs // workers, at most 4)
+    mt = int(cfg["sim"].get("malicious_threads", 0) or 0)
+    wcfg = {**cfg, "_malicious_threads": mt if mt > 0 else max(1, min(4, cpus_available() // max(1, workers)))}
     pool = None
     local_worker = None
     if workers > 1:
         pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),
-                                   initializer=_init_worker, initargs=(cfg,))
+                                   initializer=_init_worker, initargs=(wcfg,))
     else:
-        local_worker = SiteWorker(cfg)
+        local_worker = SiteWorker(wcfg)
 
     def evaluate(rnd: int, splits: list[str]) -> None:
         t0 = time.time()
@@ -84,10 +88,14 @@ def run_local(cfg: dict[str, Any], run_dir: Path, log=print) -> dict[str, Any]:
         for rnd in range(1, R + 1):
             t0 = time.time()
             tasks = server.tasks(theta, rnd)
+            order = sorted(range(len(tasks)), key=lambda i: (tasks[i]["role"] != "malicious", i))
             if pool is not None:
-                results = list(pool.map(_run_task, tasks))
+                done = list(pool.map(_run_task, [tasks[i] for i in order]))
             else:
-                results = [local_worker.run(t) for t in tasks]
+                done = [local_worker.run(tasks[i]) for i in order]
+            results = [None] * len(tasks)
+            for i, r in zip(order, done):
+                results[i] = r                      # aggregation sees the sites in their usual order
             t_clients = time.time() - t0
             theta, rec = server.aggregate(rnd, theta, results)
             rec.update(round_wall_s=round(time.time() - t0, 3), clients_wall_s=round(t_clients, 3),

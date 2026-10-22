@@ -1,8 +1,8 @@
-# E4 - sensitivity (RQ3): share of compromised sites and trigger amplitude, head-only fine-tuning.
+# E4 - sensitivity (RQ3): share of compromised sites and trigger amplitude, head-only fine-tuning, 2 seeds.
 [grid]
 name = "E4_sensitivity"
 base_config = "configs/base.toml"
-seeds = [0, 1, 2]
+seeds = [0, 1]
 
 [fixed]
 "attack.type" = "scale"

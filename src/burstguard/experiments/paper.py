@@ -56,7 +56,7 @@ def fmt_ci(r: dict | None, m: str, d: int = 3) -> str:
     lo, hi = _num(r.get(f"{m}_lo")), _num(r.get(f"{m}_hi"))
     if lo is None or hi is None:
         return fmt(r[m], d)
-    return f"{r[m]:.{d}f}\\,{{\\scriptsize[{lo:.{d - 1}f},{hi:.{d - 1}f}]}}"
+    return f"{r[m]:.{d}f}\\,{{\\scriptsize[{lo:.{d}f},{hi:.{d}f}]}}"
 
 
 def pick(rows: list[dict], **kw) -> dict | None:
@@ -188,10 +188,13 @@ def table_vulnerability(root: Path, tdir: Path, numbers: dict) -> str | None:
     if not t:
         return None
     rows, _ = t
+    e1 = _load(root, "E1_clean")       # v0.3.4: E2 has no clean runs, the clean reference is E1 (FL, FedAvg)
+    e1_rows = e1[0] if e1 else []
     body = []
     numbers["vulnerability"] = {}
     for peft in PEFTS:
-        clean = pick(rows, attack__type="none", train__peft=peft)
+        clean = pick(rows, attack__type="none", train__peft=peft) or next(
+            (r for r in e1_rows if r.get("job.kind", "fl") == "fl" and r.get("train.peft") == peft), None)
         if not clean:
             continue
         cells = [PEFT_TEX[peft], fmt_ci(clean, "mase_daily")]
@@ -205,7 +208,7 @@ def table_vulnerability(root: Path, tdir: Path, numbers: dict) -> str | None:
         body.append(cells)
     cap = ("Vulnerability of federated fine-tuning to burst-triggered backdoors (2 of 20 sites malicious, FedAvg): "
            "attack success rate on triggered test windows of benign sites (ASR, forecast within 50\\% of the "
-           "attacker's target) and relative change of clean MASE ($\\Delta$\\%).")
+           "attacker's target) and relative change of clean MASE ($\\Delta$\\%) against the clean federation.")
     groups = [(2, "")] + [(2, ATTACK_TEX[a]) for a in ATTACKS]
     hdr = ["Tuned", "Clean MASE"] + ["ASR", "$\\Delta$MASE\\%"] * len(ATTACKS)
     (tdir / "vulnerability.tex").write_text(_tabular("lr" + "rr" * len(ATTACKS), hdr, body, cap,
@@ -255,7 +258,7 @@ def _variant_label(r: dict, varying: list[str]) -> str:
     parts = [f"{k.split('.')[-1]}={r.get(k)}" for k in varying
              if k.startswith("burstguard.") and k != "burstguard.mode" and r.get(k) is not None
              and not (k == "burstguard.restarts" and r.get("burstguard.steps") == 0)]
-    return ", ".join(parts) or "default (both refs, K=20, R=2, 64 probes, W=6, 2$\\sigma$)"
+    return ", ".join(parts) or "default (both refs, K=8, R=1, 32 probes, W=6, 2$\\sigma$)"
 
 
 def table_ablation(root: Path, tdir: Path, numbers: dict) -> str | None:
@@ -283,9 +286,26 @@ def table_ablation(root: Path, tdir: Path, numbers: dict) -> str | None:
                                     "auc_constrain": _num((cs or {}).get("auc_vs_clean")),
                                     "fpr_clean": _num((cl or {}).get("fpr_units")),
                                     "screen_cpu_s": _num((cl or {}).get("screen_cpu_s_mean"))}
+        if key == json.dumps({k: None for k in others}, sort_keys=True):
+            # decision-rule variants replayed on the default variant's monitor-mode rounds (no extra runs)
+            for rule, rl in (("last", "reference = last only"), ("anchor", "reference = anchor only"),
+                             ("fixed_anchor", "fixed anchor threshold")):
+                g = lambda r, m: (r or {}).get(f"rule_{rule}_{m}")  # noqa: E731
+                if all(g(r, "tpr_units") is None for r in (sc, cs)):
+                    continue
+                body.append([f"{rl} (replayed)", fmt(g(sc, "auc_vs_clean"), 3), fmt(g(cs, "auc_vs_clean"), 3),
+                             fmt(g(sc, "tpr_units"), 2), fmt(g(cs, "tpr_units"), 2),
+                             fmt(g(sc, "fpr_clean") if g(sc, "fpr_clean") is not None else g(cl, "fpr_units"), 2),
+                             "--"])
+                numbers["ablation"][f"rule:{rule}"] = {"auc_scale": _num(g(sc, "auc_vs_clean")),
+                                                       "auc_constrain": _num(g(cs, "auc_vs_clean")),
+                                                       "tpr_scale": _num(g(sc, "tpr_units")),
+                                                       "tpr_constrain": _num(g(cs, "tpr_units")),
+                                                       "fpr_clean": _num(g(sc, "fpr_clean"))}
     cap = ("BurstGuard ablation (Head fine-tuning, monitor mode): ROC AUC of the per-round score separating attacked "
            "rounds from clean-federation rounds, detection rate (TPR) at the deployed thresholds, false-positive "
-           "rate on clean rounds, and server CPU seconds per screened round.")
+           "rate on clean rounds, and server CPU seconds per screened round. Rows marked replayed apply another "
+           "decision rule to the scores of the default variant (same rounds; AUC of the single score).")
     hdr = ["Variant", "AUC scale", "AUC constr.", "TPR scale", "TPR constr.", "FPR", "CPU s"]
     (tdir / "ablation.tex").write_text(_tabular("lrrrrrr", hdr, body, cap, "tab:ablation"))
     return "tables/ablation.tex"

@@ -3,6 +3,60 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.4] — 2026-10-22
+
+Campaign release after the real-data pilot (P0, v0.3.2 on the 5 VMs). New experiment code
+(`EXPERIMENT_CODE = "0.3.4"`): results are not mixed with 0.3.0–0.3.3.
+
+P0 (v0.3.2, 5 of 10 jobs, 20 rounds, BurstGuard monitor): clean FL improves on the pre-trained model (validation
+MASE ~0.70 at round 0 -> 0.672 head / 0.627 LoRA at round 20; test 0.657 / 0.637); plain data poisoning does not implant (ASR <= 0.001) although BurstGuard's
+anchor score separates it (AUC 0.90 / 0.96); model replacement with the stronger attacker (poison_frac 0.5,
+10 local epochs) implants on LoRA (test ASR 0.41, MASE +48 %) and is flagged in every round. Screening took
+250-740 CPU s per round (70-85 % of the round time), and the 5 machines are worth ~3 vm-e: the planned grids would
+have needed ~87 h wall.
+
+### Changed (defaults, configs/base.toml and config.py)
+- `fl.rounds` 30 -> 20.
+- Strong attacker by default: `attack.poison_frac` 0.2 -> 0.5, `attack.local_epochs` 5 -> 10.
+- Cheaper BurstGuard search: `probe_windows` 64 -> 32, `steps` 20 -> 8, `restarts` 2 -> 1, `step_size` 0.1 -> 0.2
+  (~10x fewer model evaluations; E9 measures the effect of 0/3/20 steps, 2 restarts, 16/64 windows).
+- Thresholds from the P0 clean scores (last <= 0.02, anchor <= 0.08 at round 20): `threshold` 0.15 -> 0.08,
+  `threshold_anchor` 0.5 -> 0.3 (E0 + `burstguard calibrate` checks them).
+- `BurstGuard.score` runs all (direction, restart) chains as one batch: identical scores (test against the sequential
+  loop), ~1.5-2x faster with 4 threads.
+- Local engine: malicious clients (the stragglers: 10 local epochs) are dispatched first and train with spare CPU
+  threads (`sim.malicious_threads`, 0 = auto: CPUs // workers, at most 4); results are re-ordered so aggregation sees
+  the sites in the usual order.
+- Grids trimmed to ~150 vm-e hours (~51 h wall on the weighted cluster 4,1,3,1,3):
+  P0 {none, scale, constrain_scale, constrain_scale x3 bound} x {head, LoRA} (8 jobs);
+  E0 2 seeds (8); E1 FL 4 modes x 3 seeds + local-only/centralised head+LoRA x 2 seeds + zero-shot (21);
+  E2 scale x 4 modes x 3 seeds + poison/constrain x head+LoRA x 2 seeds, no attack-free runs (20);
+  E3 head {none, scale, constrain} x 9 defenses x 3 seeds + LoRA x 8 defenses x 2 seeds (129);
+  E4 2 seeds (54); E5 40 rounds, attack in rounds 6-15, head+LoRA, 2 seeds (14); E6 head 3 seeds, LoRA 1 seed (36);
+  E7 2 seeds (56); E9 10 search variants x 3 attacks x 2 seeds (60).
+- `burstguard plan` cost model: per-round cost of clean jobs, a measured slow-down of attacked jobs (stragglers), and
+  BurstGuard cost per screened unit scaled by the search effort (probe windows x restarts x directions x steps);
+  priors from P0 v0.3.2. Shard balancing uses the same model.
+
+### Added
+- `[[exclude]]` in grid files can match `run.seed` (fewer seeds for the expensive fine-tuning mode).
+- Jobs carry `effective` (resolved cost-relevant keys, e.g. `fl.rounds` from the base config) in the expanded job
+  and in `result.json`; `plan` and the lifespan analysis use it.
+- `attack.norm_mult` (constrain_scale / adaptive): norm bound = norm_mult x the attacker's benign update norm.
+- Decision-rule replay for monitor-mode runs (`engines.common.rule_flags`): reference = last only, anchor only and a
+  fixed anchor threshold are re-applied to the logged scores of the same rounds (exact in monitor mode;
+  `rule_replay_agree` checks the deployed rule against the logged decisions). `analyze` writes `rule_*` columns and a
+  second table in `summary.md`; the paper's ablation table gets "replayed" rows. E9 therefore no longer runs the
+  reference / anchor_adaptive variants.
+- `summary.md` shows `round_wall_s_mean`.
+
+### Fixed
+- `auc_vs_clean`: attacked configurations with extra attack parameters (e.g. `attack.norm_mult`) are matched with the
+  clean configuration (attack keys ignored).
+- Paper vulnerability table: clean reference falls back to E1 (FL) when E2 has no attack-free runs; confidence
+  intervals printed with the same precision as the value.
+- Ablation table label of the default variant reflects the v0.3.4 defaults.
+
 ## [0.3.3] — 2026-10-22
 
 Operations release for heterogeneous VMs; experiment code identical to 0.3.0 (`EXPERIMENT_CODE = "0.3.0"`).

@@ -58,39 +58,43 @@ class BurstGuard:
         self.threads = t if t > 0 else max(1, min(4, (os.cpu_count() or 2) - 1))
 
     def score(self, cand_vec: np.ndarray, ref_vec: np.ndarray, seed: int = 0) -> float:
+        """Projected sign-gradient ascent; all (direction, restart) chains run as ONE batch (identical to running
+        them one after another: the model has no cross-sample interaction and the sign of each sample's gradient
+        does not depend on the other samples), which is ~1.5-2x faster on CPU than sequential chains."""
         bg = self.bg
         M.set_params_vec(self._pc, cand_vec)
         M.set_params_vec(self._pr, ref_vec)
-        W, K, R = int(bg["width_max"]), int(bg["steps"]), int(bg["restarts"])
+        W, K, R = int(bg["width_max"]), int(bg["steps"]), max(1, int(bg["restarts"]))
         amax, step = float(bg["amplitude_max"]), float(bg["step_size"])
         X, sig = self.X, self.sig
-        L = X.shape[1]
+        N, L = X.shape[0], X.shape[1]
         g0 = torch.Generator().manual_seed(int(seed))
+        signs = (1.0, -1.0) if bg["both_directions"] else (1.0,)
+        chains = [sg for sg in signs for _ in range(R)]
+        C = len(chains)
         with torch.no_grad():
             bc = M.forward(self.cand, X, self.freq)
             br = M.forward(self.ref, X, self.freq)
-        best = -1e9
-        for sign in ((1.0, -1.0) if bg["both_directions"] else (1.0,)):
-            for _ in range(R):
-                g = torch.rand(X.shape[0], W, 1, generator=g0).requires_grad_(True)
-                for _ in range(K):
-                    d = torch.zeros_like(X)
-                    d[:, L - W:, :] = g * amax * sig
-                    dc = (sign * (bc - M.forward(self.cand, X + d, self.freq)) / (bc.abs() + 1e-3)).mean()
-                    dr = (sign * (br - M.forward(self.ref, X + d, self.freq)) / (br.abs() + 1e-3)).mean()
-                    s = dc - dr
-                    s.backward()
-                    with torch.no_grad():
-                        g += step * g.grad.sign()
-                        g.clamp_(0.0, 1.0)
-                        g.grad.zero_()
-                with torch.no_grad():  # evaluate the final iterate
-                    d = torch.zeros_like(X)
-                    d[:, L - W:, :] = g * amax * sig
-                    dc = (sign * (bc - M.forward(self.cand, X + d, self.freq)) / (bc.abs() + 1e-3)).mean()
-                    dr = (sign * (br - M.forward(self.ref, X + d, self.freq)) / (br.abs() + 1e-3)).mean()
-                    best = max(best, float(dc - dr))
-        return best
+        rep = lambda t: t.repeat((C,) + (1,) * (t.dim() - 1))
+        XX, SS, BC, BR = rep(X), rep(sig), rep(bc), rep(br)
+        sgn = torch.tensor(chains, dtype=bc.dtype).repeat_interleave(N).view((-1,) + (1,) * (bc.dim() - 1))
+        g = torch.cat([torch.rand(N, W, 1, generator=g0) for _ in chains]).requires_grad_(True)
+
+        def chain_scores(gv):
+            d = torch.zeros_like(XX)
+            d[:, L - W:, :] = gv * amax * SS
+            dc = sgn * (BC - M.forward(self.cand, XX + d, self.freq)) / (BC.abs() + 1e-3)
+            dr = sgn * (BR - M.forward(self.ref, XX + d, self.freq)) / (BR.abs() + 1e-3)
+            return (dc - dr).reshape(C, -1).mean(dim=1)      # one score per chain
+
+        for _ in range(K):
+            chain_scores(g).sum().backward()
+            with torch.no_grad():
+                g += step * g.grad.sign()
+                g.clamp_(0.0, 1.0)
+                g.grad.zero_()
+        with torch.no_grad():  # evaluate the final iterate of every chain
+            return float(chain_scores(g).max())
 
     def _adaptive(self, floor: float, hist: list[float]) -> float:
         h = hist[-int(self.bg["history"]):]

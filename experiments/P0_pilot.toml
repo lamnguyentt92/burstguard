@@ -1,35 +1,30 @@
-# P0 - pilot on the real data (run FIRST, ~1 h on 5 VMs): does the burst backdoor take hold under FedAvg, how do
-# BurstGuard scores separate clean from attacked rounds, and how long does a round take (for `burstguard plan`).
-# Monitor mode: BurstGuard scores every round but never rejects, so the attack is unfiltered (= FedAvg) while
-# the detection scores are recorded. Send: bash scripts/collect_logs.sh --grid P0_pilot  (after burstguard analyze)
+# P0 - pilot on the real data (run FIRST, ~2 h on the 5 VMs) with the v0.3.4 defaults (20 rounds, strong attacker:
+# poison_frac 0.5 / 10 local epochs, cheap BurstGuard search: 8 steps, 1 restart, 32 probe windows).
+# Questions: does the backdoor take hold with head-only and LoRA fine-tuning, does the norm-bounded attack
+# (constrain_scale, bound = benign norm, or 3x with norm_mult = 3) implant, how well do the cheap BurstGuard scores
+# separate clean from attacked rounds, and how long does a round take (for `burstguard plan`).
+# Monitor mode: BurstGuard scores every round but never rejects (= FedAvg), so the attack is unfiltered.
 [grid]
 name = "P0_pilot"
 base_config = "configs/base.toml"
 seeds = [0]
 
 [fixed]
-"fl.rounds" = 20
-"fl.eval_every" = 5
 "defense.name" = "burstguard"
 "burstguard.mode" = "monitor"
-"fl.save_model" = true
 
 [factors]
 "train.peft" = ["head", "lora"]
-"attack.type" = ["none", "poison", "scale", "constrain_scale"]
+"attack.type" = ["none", "scale", "constrain_scale"]
 
-
-# stronger attacker (more poisoned windows, longer local training) - used if the default barely implants
 [[include]]
 "train.peft" = "head"
-"attack.type" = "scale"
-"attack.poison_frac" = 0.5
-"attack.local_epochs" = 10
+"attack.type" = "constrain_scale"
+"attack.norm_mult" = 3.0
 [[include]]
 "train.peft" = "lora"
-"attack.type" = "scale"
-"attack.poison_frac" = 0.5
-"attack.local_epochs" = 10
+"attack.type" = "constrain_scale"
+"attack.norm_mult" = 3.0
 
 [analysis]
 split = "test"

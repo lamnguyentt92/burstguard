@@ -73,6 +73,18 @@ class SiteWorker:
         return st["mal"]
 
     def run(self, task: dict[str, Any]) -> dict[str, Any]:
+        if task["role"] != "malicious" or int(self.cfg.get("_malicious_threads", 1)) <= 1:
+            return self._run(task)
+        prev = torch.get_num_threads()     # stragglers: use the CPUs the finished benign workers left idle
+        torch.set_num_threads(int(self.cfg["_malicious_threads"]))
+        try:
+            out = self._run(task)
+            out["info"]["threads"] = int(self.cfg["_malicious_threads"])
+            return out
+        finally:
+            torch.set_num_threads(prev)
+
+    def _run(self, task: dict[str, Any]) -> dict[str, Any]:
         cfg, sid, rnd = self.cfg, int(task["site"]), int(task["round"])
         t0, c0 = time.time(), time.process_time()
         st = self._site(sid)

@@ -2,11 +2,11 @@
 # (only aggregate-level defenses possible); more groups trade aggregation granularity for robustness.
 # BurstGuard with groups = 1 screens the aggregate and, when it is flagged, re-aggregates the round in random
 # secure groups and keeps the clean ones (burstguard.on_flag = regroup, default); the [[include]] runs show the
-# plain "reject the round" policy for comparison.
+# plain "reject the round" policy for comparison. Head fine-tuning, 2 seeds.
 [grid]
 name = "E7_secagg"
 base_config = "configs/base.toml"
-seeds = [0, 1, 2]
+seeds = [0, 1]
 
 [fixed]
 "secagg.enabled" = true

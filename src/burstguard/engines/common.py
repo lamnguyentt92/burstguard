@@ -84,6 +84,37 @@ def _client_cpu(rounds: list[dict]) -> float | None:
     return float(np.mean(v)) if v else None
 
 
+RULES = ("last", "anchor", "fixed_anchor")
+
+
+def rule_flags(run_dir: Path, per_round: list[list[tuple]]) -> dict[str, list[int]] | None:
+    """Monitor-mode runs record S_last and S_anchor of every round and accept every aggregate, so other decision
+    rules can be replayed exactly on the same rounds (E9 ablation without extra runs):
+      last          reference = last only (S_last vs its adaptive threshold)
+      anchor        reference = anchor only
+      fixed_anchor  both references, fixed anchor threshold (anchor_adaptive = false)
+      both          the deployed rule (should reproduce the logged would_flag: rule_replay_agree = 1)
+    Returns {rule: [0/1 per unit, in unit_scores order]} or None (enforce mode, single reference, no config)."""
+    p = Path(run_dir) / "config.toml"
+    if not p.exists() or not per_round:
+        return None
+    try:
+        import tomllib
+        b = tomllib.loads(p.read_text()).get("burstguard", {})
+        if b.get("mode") != "monitor" or b.get("reference", "both") != "both":
+            return None
+        from burstguard.defenses.burstguard import replay_flags
+        thr, thr_a = float(b["threshold"]), float(b["threshold_anchor"])
+        k, h, ad = float(b["mad_k"]), int(b["history"]), bool(b.get("anchor_adaptive", True))
+    except Exception:
+        return None
+    inf = float("inf")
+    rules = {"both": (thr, thr_a, ad), "last": (thr, inf, ad), "anchor": (inf, thr_a, ad),
+             "fixed_anchor": (thr, thr_a, False)}
+    return {name: [int(f) for fl in replay_flags(per_round, t, ta, k, h, a) for f in fl]
+            for name, (t, ta, a) in rules.items()}
+
+
 def summarize(run_dir: Path) -> dict[str, Any]:
     """Final metrics + series used by the analysis (also works on partial runs)."""
     rounds, evals = [], []
@@ -116,7 +147,7 @@ def summarize(run_dir: Path) -> dict[str, Any]:
                "score_max_attack": float(max(max(r["burstguard"]["scores"]) for r in att if r.get("burstguard"))) if any(r.get("burstguard") for r in att) else None,
                "screen_cpu_s_mean": float(np.mean([b["cpu_s"] for b in bg]))}
     # unit-level records for ROC/AUC: [round, combined score, score_last, score_anchor, label, would_flag]
-    units = []
+    units, per_round = [], []
     for r in rounds:
         b = r.get("burstguard")
         if not b:
@@ -126,10 +157,13 @@ def summarize(run_dir: Path) -> dict[str, Any]:
         else:
             labels = [bool(r.get("screened_has_malicious", r.get("selected_has_malicious")))
                       and bool(r.get("attack_active"))]
+        pr = []
         for i, y in enumerate(labels[:len(b.get("scores", []))]):
             sl, sa = b["score_last"][i], b["score_anchor"][i]
             units.append([r["round"], round(float(b["scores"][i]), 5), None if sl is None else round(float(sl), 5),
                           None if sa is None else round(float(sa), 5), int(y), int(bool(b["would_flag"][i]))])
+            pr.append((sl, sa))
+        per_round.append(pr)
     if units:
         pos = [u for u in units if u[4]]
         neg = [u for u in units if not u[4]]
@@ -137,6 +171,11 @@ def summarize(run_dir: Path) -> dict[str, Any]:
         det["fpr_units"] = float(np.mean([u[5] for u in neg])) if neg else None
         det["auc_units"] = auc([u[1] for u in units], [u[4] for u in units])
         det["unit_scores"] = units
+        rf = rule_flags(run_dir, per_round)
+        if rf:
+            agree = [a == u[5] for a, u in zip(rf.pop("both"), units)]
+            det["rule_replay_agree"] = float(np.mean(agree)) if agree else None
+            det["rule_flags"] = rf
     rg = [r["burstguard_regroup"] for r in rounds if r.get("burstguard_regroup")]
     if rg:
         mg = [f for x in rg for f, h in zip(x["would_flag"], x["unit_has_malicious"]) if h]

@@ -46,7 +46,7 @@ DEFAULTS: dict[str, Any] = {
         "head_cache": True,
     },
     "fl": {
-        "rounds": 30,
+        "rounds": 20,
         "eval_every": 5,
         "eval_split": "val",
         "final_splits": ["test", "holiday"],
@@ -81,11 +81,12 @@ DEFAULTS: dict[str, Any] = {
         "malicious_sites": [],   # explicit list overrides num_malicious
         "start_round": 1,
         "end_round": 0,          # exclusive; 0 = until the end
-        "poison_frac": 0.2,
-        "local_epochs": 5,       # attackers may train longer than benign clients (Bagdasaryan et al. 2020)
+        "poison_frac": 0.5,
+        "local_epochs": 10,      # attackers may train longer than benign clients (Bagdasaryan et al. 2020)
         "lr_mult": 3.0,          # attacker learning rate = lr_mult * train.lr
         "boost": 0.0,            # scale attacks: 0 = num_sites / num_malicious (model replacement)
-        "norm_bound": 0.0,       # constrain_scale: 0 = attacker's own benign update norm
+        "norm_bound": 0.0,       # constrain_scale: absolute bound; 0 = norm_mult x attacker's own benign update norm
+        "norm_mult": 1.0,        # constrain_scale / adaptive: bound = norm_mult x benign norm (when norm_bound = 0)
         "neurotoxin_topk": 0.1,  # fraction of coordinates (largest recent global change) left untouched
         "decoy_frac": 1.0,       # adaptive: decoy windows per poisoned window (random bursts, clean labels)
     },
@@ -110,14 +111,14 @@ DEFAULTS: dict[str, Any] = {
         "mode": "enforce",       # enforce | monitor (score and log only)
         "screen": "auto",        # auto | aggregate | units ("auto" = units when secagg.groups > 1)
         "reference": "both",     # both | last (last accepted global) | anchor (pre-trained model)
-        "probe_windows": 64,
-        "steps": 20,
-        "restarts": 2,
-        "step_size": 0.1,
+        "probe_windows": 32,
+        "steps": 8,
+        "restarts": 1,
+        "step_size": 0.2,
         "width_max": 6,
         "amplitude_max": 2.0,
-        "threshold": 0.15,       # floor for the per-round score (vs. last accepted global)
-        "threshold_anchor": 0.5, # floor for the accumulated score (vs. pre-trained model)
+        "threshold": 0.08,       # floor for the per-round score (vs. last accepted global)
+        "threshold_anchor": 0.3, # floor for the accumulated score (vs. pre-trained model)
         "anchor_adaptive": True, # anchor threshold also follows benign drift: max(floor, median + mad_k * MAD)
         "mad_k": 5.0,
         "history": 5,            # rounds of accepted scores used by the adaptive thresholds
@@ -131,6 +132,7 @@ DEFAULTS: dict[str, Any] = {
         "num_cpus": 0,
         "cpus_per_client": 1,
         "torch_threads": 1,
+        "malicious_threads": 0,  # torch threads of malicious clients (stragglers); 0 = auto: CPUs // workers, max 4
         "ray_temp_dir": "",
     },
 }

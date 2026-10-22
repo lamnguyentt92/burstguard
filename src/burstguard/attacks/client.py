@@ -72,7 +72,7 @@ def postprocess(delta: np.ndarray, cfg: dict[str, Any], benign_norm: float | Non
         delta = delta * boost
         info["boost"] = boost
     if t in ("constrain_scale", "adaptive"):
-        bound = float(at["norm_bound"]) or float(benign_norm or 0.0)
+        bound = float(at["norm_bound"]) or float(at.get("norm_mult", 1.0)) * float(benign_norm or 0.0)
         nrm = float(np.linalg.norm(delta))
         if bound > 0 and nrm > bound:
             delta = delta * (bound / nrm)

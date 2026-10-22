@@ -151,8 +151,9 @@ def build_rows(gdir: Path, split: str = "test", log=print) -> tuple[list[dict], 
         ls = []
         for j in js:
             xs, ys = _val_asr_series(j["dir"])
+            eff = j["res"].get("effective") or {}
             v, cens = lifespan(xs, ys, int(ov.get("attack.start_round", 1)), int(ov.get("attack.end_round", 0)),
-                               int(ov.get("fl.rounds", 30)))
+                               int(ov.get("fl.rounds", eff.get("fl.rounds", 20))))
             if v is not None:
                 ls.append((v, cens))
         if ls:
@@ -174,6 +175,20 @@ def build_rows(gdir: Path, split: str = "test", log=print) -> tuple[list[dict], 
             row["auc_units"] = auc([u[1] for u in units], [u[4] for u in units])
             row["n_units_pos"], row["n_units_neg"] = len(pos), len(neg)
             row["_units"] = units
+            # decision rules replayed offline on the same monitor-mode rounds (engines.common.rule_flags)
+            if all(d.get("rule_flags") for d in dets if d.get("unit_scores")):
+                from burstguard.engines.common import RULES
+                rf = {name: [f for d in dets for f in (d.get("rule_flags") or {}).get(name, [])] for name in RULES}
+                if all(len(v) == len(units) for v in rf.values()):
+                    row["_rule_flags"] = rf
+                    for name, fl in rf.items():
+                        fp = [f for f, u in zip(fl, units) if u[4]]
+                        fn = [f for f, u in zip(fl, units) if not u[4]]
+                        row[f"rule_{name}_tpr_units"] = float(np.mean(fp)) if fp else None
+                        row[f"rule_{name}_fpr_units"] = float(np.mean(fn)) if fn else None
+                ag = [d["rule_replay_agree"] for d in dets if d.get("rule_replay_agree") is not None]
+                if ag:
+                    row["rule_replay_agree"] = float(np.mean(ag))
         kept = [(j["res"].get("filtering") or {}).get("malicious_kept_rate") for j in js]
         kept = [k for k in kept if k is not None]
         if kept:
@@ -199,7 +214,9 @@ def analyze(gdir: Path, split: str = "test", reference: dict[str, Any] | None = 
         ["lifespan_l50", "lifespan_censored", "tpr_rounds", "fpr_rounds", "tpr_units", "fpr_units", "auc_units",
          "auc_vs_clean", "fpr_clean", "n_units_pos", "n_units_neg", "regroup_rounds", "regroup_tpr_groups",
          "regroup_fpr_groups", "regroup_kept_malicious_rate", "score_max_clean", "score_max_attack", "malicious_kept_rate", "screen_cpu_s_mean", "server_defense_cpu_s_mean",
-         "round_wall_s_mean", "client_train_cpu_s_mean", "update_bytes", "wall_s"]
+         "round_wall_s_mean", "client_train_cpu_s_mean", "update_bytes", "wall_s", "rule_replay_agree"] + \
+        [f"rule_{n}_{m}" for n in ("last", "anchor", "fixed_anchor")
+         for m in ("tpr_units", "fpr_units", "auc_vs_clean", "fpr_clean")]
     cols = [c for c in cols if any(c in r for r in rows)]
     with open(out / "summary.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
@@ -220,11 +237,11 @@ def analyze(gdir: Path, split: str = "test", reference: dict[str, Any] | None = 
 
 def _detection_vs_clean(rows, varying):
     """For attacked configurations, pool their malicious units with the benign units of the matching clean
-    configuration (attack.type = none, all other varying keys equal): auc_vs_clean, fpr_clean."""
+    configuration (attack.type = none, all other non-attack varying keys equal): auc_vs_clean, fpr_clean."""
     if "attack.type" not in varying:
         return
     from burstguard.engines.common import auc
-    others = [k for k in varying if k != "attack.type"]
+    others = [k for k in varying if not k.startswith("attack.")]   # a clean federation has no attack parameters
     clean = {json.dumps({k: q.get(k) for k in others}, sort_keys=True): q for q in rows
              if q.get("attack.type") == "none" and q.get("_units")}
     for r in rows:
@@ -239,6 +256,17 @@ def _detection_vs_clean(rows, varying):
             r["auc_vs_clean"] = auc([u[1] for u in pos + neg], [1] * len(pos) + [0] * len(neg))
             r["fpr_clean"] = float(np.mean([u[5] for u in neg]))
             r["_roc"] = ([u[1] for u in pos + neg], [1] * len(pos) + [0] * len(neg))
+            # single-reference rules: AUC of S_last / S_anchor alone; FPR of every replayed rule on the clean units
+            for name, idx in (("last", 2), ("anchor", 3)):
+                sp = [u[idx] for u in pos if u[idx] is not None]
+                sn = [u[idx] for u in neg if u[idx] is not None]
+                if sp and sn:
+                    r[f"rule_{name}_auc_vs_clean"] = auc(sp + sn, [1] * len(sp) + [0] * len(sn))
+            if r.get("_rule_flags") and q.get("_rule_flags"):
+                for name, fl in q["_rule_flags"].items():
+                    fn = [f for f, u in zip(fl, q["_units"]) if not u[4]]
+                    if fn:
+                        r[f"rule_{name}_fpr_clean"] = float(np.mean(fn))
 
 
 def _paired_tests(rows, varying, reference):
@@ -289,13 +317,25 @@ def _fmt(r, m, digits=3):
 
 def _markdown(rows, varying, split):
     shown = [m for m in ("mase_daily", "asr", "te", "ae", "upr_trig", "lifespan_l50", "tpr_units", "fpr_units",
-                         "auc_units", "auc_vs_clean", "fpr_clean", "malicious_kept_rate", "server_defense_cpu_s_mean")
+                         "auc_units", "auc_vs_clean", "fpr_clean", "malicious_kept_rate", "server_defense_cpu_s_mean",
+                         "round_wall_s_mean")
              if any(r.get(m) is not None for r in rows)]
     head = "| " + " | ".join([k.split(".")[-1] for k in varying] + ["seeds"] + shown) + " |"
     sep = "|" + "---|" * (len(varying) + 1 + len(shown))
     lines = [f"Split: {split}. Values: mean [95% bootstrap CI] over seeds x sites.", "", head, sep]
     for r in rows:
         lines.append("| " + " | ".join([str(r.get(k)) for k in varying] + [str(r["n_seeds"])] + [_fmt(r, m) for m in shown]) + " |")
+    rules = [f"rule_{n}_{m}" for n in ("last", "anchor", "fixed_anchor") for m in ("tpr_units", "auc_vs_clean", "fpr_clean")]
+    rules = [c for c in rules if any(r.get(c) is not None for r in rows)]
+    if rules:   # monitor-mode grids: other decision rules replayed on the same rounds
+        lines += ["", "Decision rules replayed offline on the same monitor-mode rounds (last = S_last only, anchor = "
+                  "S_anchor only, fixed_anchor = anchor_adaptive false); replay_agree = share of rounds where the "
+                  "replayed deployed rule matches the logged decision (should be 1.000).", "",
+                  "| " + " | ".join([k.split(".")[-1] for k in varying] + rules + ["replay_agree"]) + " |",
+                  "|" + "---|" * (len(varying) + len(rules) + 1)]
+        for r in rows:
+            lines.append("| " + " | ".join([str(r.get(k)) for k in varying] + [_fmt(r, m, 3) for m in rules]
+                                           + [_fmt(r, "rule_replay_agree", 3)]) + " |")
     return "\n".join(lines) + "\n"
 
 

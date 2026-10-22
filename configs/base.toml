@@ -26,7 +26,7 @@ lora_r = 8
 lora_alpha = 16
 
 [fl]
-rounds = 30
+rounds = 20             # v0.3.4: 20 rounds (P0: clean MASE gains flatten after ~15 rounds)
 eval_every = 5
 eval_split = "val"
 final_splits = ["test", "holiday"]
@@ -44,8 +44,8 @@ tau = 0.5
 [attack]
 type = "none"
 num_malicious = 2      # 10 % of the sites
-poison_frac = 0.2
-local_epochs = 5
+poison_frac = 0.5      # v0.3.4: strong attacker by default (P0 v0.3.2: 0.2 / 5 epochs barely implants)
+local_epochs = 10
 lr_mult = 3.0
 
 [defense]
@@ -53,12 +53,13 @@ name = "fedavg"
 
 [burstguard]
 mode = "enforce"
-probe_windows = 64
-steps = 20
-restarts = 2
+probe_windows = 32        # v0.3.4: cheaper screen (P0 v0.3.2: 64 windows x 20 steps x 2 restarts took 70-85 %
+steps = 8                 #         of the round time); E9 varies these (steps 0/3/20, restarts 2, 16/64 windows)
+restarts = 1
+step_size = 0.2
 width_max = 6
 amplitude_max = 2.0
 reference = "both"
-threshold = 0.15          # floor, per-round score vs. last accepted global  (calibrate with E0)
-threshold_anchor = 0.5    # floor, accumulated score vs. pre-trained model   (calibrate with E0)
+threshold = 0.08          # floor, per-round score vs. last accepted global  (P0 clean <= 0.02; calibrate with E0)
+threshold_anchor = 0.3    # floor, accumulated score vs. pre-trained model   (P0 clean <= 0.08 at round 20)
 anchor_adaptive = true    # anchor threshold follows smooth benign drift (median + mad_k * MAD)
