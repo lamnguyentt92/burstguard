@@ -76,6 +76,12 @@ def cmd_data_download(a, ctx):
     ctx.set(**{k: v for k, v in res.items() if not isinstance(v, (list, dict))})
 
 
+def cmd_data_guestbook(a, ctx):
+    from burstguard.data import dataverse
+    res = dataverse.guestbook_setup(region=a.region, force=a.force)
+    ctx.set(**{k: v for k, v in res.items() if not isinstance(v, (list, dict))})
+
+
 def cmd_data_prepare(a, ctx):
     from burstguard.data import milan
     from burstguard.data.store import describe, load_dataset, save_dataset
@@ -446,6 +452,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from", dest="date_from"); s.add_argument("--to", dest="date_to")
     s.add_argument("--doi", action="append"); s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_data_download, name="download")
+    s = d.add_parser("guestbook", help="show the Dataverse guestbook questions and write a response template to fill in")
+    s.add_argument("--region", default="mi", choices=["mi", "tn"])
+    s.add_argument("--force", action="store_true", help="overwrite an existing response file with a fresh template")
+    s.set_defaults(fn=cmd_data_guestbook)
     s = d.add_parser("prepare", help="raw Milan files -> processed dataset")
     s.add_argument("--raw", default=str(RAW_DIR / "milan")); s.add_argument("--out", default="shared:data/processed/milan_d1.npz")
     s.add_argument("--sites", type=int, default=20); s.add_argument("--probe", type=int, default=8)

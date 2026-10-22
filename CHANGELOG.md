@@ -3,6 +3,23 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.2.2] — 2026-10-22
+
+Fix for the v0.2.1 report from vm-e (`data download`: HTTP 400 on datafile 2674255).
+
+### Fixed
+- Harvard Dataverse (>= 6.10) requires a guestbook response for the Telecom Italia files (guestbook 96); a plain GET
+  returns HTTP 400. Downloads now follow the documented flow: POST the guestbook response to
+  `/api/access/datafile/{id}` -> `signedUrl` -> GET (with Range resume and MD5 check).
+- Client errors (4xx except 408/429) are no longer retried five times, and the server's message is shown.
+
+### Added
+- `burstguard data guestbook`: detects the guestbook, prints its required fields and custom questions
+  (`GET /api/guestbooks/{id}`), and writes `$BURSTGUARD_SHARED/dataverse_guestbook.toml` (mode 600) to fill in.
+- Optional API token via `DATAVERSE_API_TOKEN` or `api_token` in that file (never via the command line, which is logged).
+- Hints for guestbook and 401/403 download errors; `tests/test_dataverse.py` (fake server: guestbook flow, resume,
+  no retries on 4xx, template).
+
 ## [0.2.1] — 2026-10-22
 
 Bug-fix release after the v0.2.0 report from vm-e. No change to experiments, configs or dependencies.
