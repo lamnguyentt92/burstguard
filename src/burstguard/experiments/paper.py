@@ -36,13 +36,14 @@ def akey(r: dict | None) -> str | None:
     """Attack key of a row: attack.type, plus @boost when a non-default boost is set ("scale@3")."""
     if not r:
         return None
-    b = _num(r.get("attack.boost"))
-    return f"{r.get('attack.type')}@{b:g}" if b else r.get("attack.type")
+    b = _num(rget(r, "attack.boost"))
+    t = rget(r, "attack.type") or "none"
+    return f"{t}@{b:g}" if b else t
 
 
 def pick_att(rows: list[dict], att: str, **kw) -> dict | None:
     for r in rows:
-        if akey(r) == att and all(r.get(k.replace("__", ".")) == v for k, v in kw.items()):
+        if akey(r) == att and all(rget(r, k.replace("__", ".")) == v for k, v in kw.items()):
             return r
     return None
 
@@ -76,9 +77,25 @@ def fmt_ci(r: dict | None, m: str, d: int = 3) -> str:
     return f"{r[m]:.{d}f}\\,{{\\scriptsize[{lo:.{d}f},{hi:.{d}f}]}}"
 
 
+def rget(r: dict, key: str) -> Any:
+    """Value of a configuration key for an analysis row; keys that do not vary in the grid are not columns of
+    the row, so fall back to the overrides / resolved configuration of the row's first job."""
+    if key in r:
+        return r[key]
+    js = r.get("_jobs") or []
+    if js:
+        res = js[0].get("res", {})
+        ov = res.get("overrides", {})
+        if key in ov:
+            return ov[key]
+        if key == "train.peft":
+            return (res.get("effective") or {}).get(key, "head")
+    return None
+
+
 def pick(rows: list[dict], **kw) -> dict | None:
     for r in rows:
-        if all(r.get(k.replace("__", ".")) == v for k, v in kw.items()):
+        if all(rget(r, k.replace("__", ".")) == v for k, v in kw.items()):
             return r
     return None
 
@@ -211,7 +228,7 @@ def table_vulnerability(root: Path, tdir: Path, numbers: dict) -> str | None:
     numbers["vulnerability"] = {}
     for peft in PEFTS:
         clean = pick(rows, attack__type="none", train__peft=peft) or next(
-            (r for r in e1_rows if r.get("job.kind", "fl") == "fl" and r.get("train.peft") == peft), None)
+            (r for r in e1_rows if (rget(r, "job.kind") or "fl") == "fl" and rget(r, "train.peft") == peft), None)
         cells_peft = [(att, pick_att(rows, att, train__peft=peft)) for att in ATTACKS]
         cells_peft = [(a, r) for a, r in cells_peft if r]
         if not cells_peft:
