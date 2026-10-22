@@ -136,6 +136,14 @@ def summarize(run_dir: Path) -> dict[str, Any]:
         det["fpr_units"] = float(np.mean([u[5] for u in neg])) if neg else None
         det["auc_units"] = auc([u[1] for u in units], [u[4] for u in units])
         det["unit_scores"] = units
+    rg = [r["burstguard_regroup"] for r in rounds if r.get("burstguard_regroup")]
+    if rg:
+        mg = [f for x in rg for f, h in zip(x["would_flag"], x["unit_has_malicious"]) if h]
+        bgp = [f for x in rg for f, h in zip(x["would_flag"], x["unit_has_malicious"]) if not h]
+        det["regroup_rounds"] = len(rg)
+        det["regroup_tpr_groups"] = float(np.mean(mg)) if mg else None
+        det["regroup_fpr_groups"] = float(np.mean(bgp)) if bgp else None
+        det["regroup_kept_malicious_rate"] = float(np.mean([x["kept_has_malicious"] for x in rg]))
     sel = [r for r in att if r.get("malicious_in_round")]
     filt = {"malicious_kept_rate": float(np.mean([r.get("selected_has_malicious", False) and r.get("accepted", True) for r in sel])) if sel else None}
     return {"rounds_done": len(rounds), "final": final, "series": series, "detection": det, "filtering": filt,

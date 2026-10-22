@@ -123,6 +123,9 @@ DEFAULTS: dict[str, Any] = {
         "history": 5,            # rounds of accepted scores used by the adaptive thresholds
         "both_directions": True,
         "threads": 0,            # torch threads while screening (clients are idle then); 0 = min(4, CPUs - 1)
+        "on_flag": "regroup",    # flagged aggregate: regroup (re-aggregate in random secure groups, keep clean ones)
+                                 # | reject (discard the whole round)
+        "regroup_groups": 5,
     },
     "sim": {
         "num_cpus": 0,
@@ -214,6 +217,8 @@ def validate(cfg: dict[str, Any]) -> None:
         raise ValueError(f"unknown defense.addons {sorted(bad)}; allowed {sorted(ADDONS)}")
     if "lora_reset" in d["addons"] and t["peft"] != "lora":
         raise ValueError("defense lora_reset requires train.peft = lora")
+    if cfg["burstguard"]["on_flag"] not in {"regroup", "reject"}:
+        raise ValueError("burstguard.on_flag must be regroup|reject")
     if at["type"] not in ATTACKS:
         raise ValueError(f"attack.type must be one of {sorted(ATTACKS)}")
     n = int(cfg["data"]["num_sites"])

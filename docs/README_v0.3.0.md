@@ -3,6 +3,10 @@
 > **v0.3.0 = v0.2.2 + công cụ để ra đủ số liệu cho bài trong 7 ngày:** lưới pilot `P0_pilot`, ước tính thời gian
 > `burstguard plan`, chạy theo tầng ưu tiên `run_grids.sh --tier`, gom kết quả từ 5 VM `sync_results.sh`,
 > `burstguard analyze all`, xuất bảng LaTeX/hình/số liệu cho bài `burstguard paper`, báo cáo `collect_logs.sh --campaign`.
+> **BurstGuard: khi mô hình tổng hợp bị gắn cờ, không bỏ cả vòng nữa** mà gom lại các cập nhật của vòng đó thành
+> 5 nhóm SecAgg ngẫu nhiên, sàng lọc từng nhóm và giữ các nhóm sạch (`burstguard.on_flag = regroup`, mặc định).
+> Lý do: khi kẻ tấn công tham gia mọi vòng, “bỏ cả vòng” làm mô hình không học được gì (an toàn nhưng mất tác dụng);
+> vòng sạch không phải lộ thêm thông tin nào. E7 có thêm 6 job so sánh với chính sách cũ (`on_flag = reject`).
 > Thêm baseline phòng thủ `probe_screen` (từ chối mô hình tổng hợp nếu sai số trên dữ liệu probe công khai tăng > 5 % —
 > cũng dùng được với SecAgg; trả lời câu hỏi “sao không kiểm tra bằng dữ liệu của server?”). E2 giảm còn 3 seed;
 > E2/E3 lưu mô hình cuối (cho hình minh hoạ). Thuật toán BurstGuard và các tấn công giữ nguyên v0.2.x.
@@ -152,7 +156,7 @@ bash scripts/collect_logs.sh --campaign             # gửi mình cả .txt và 
 | `E1_clean` | 1 | FL × 4 PEFT vs local-only vs centralized vs zero-shot | 39 | ~10 |
 | `E2_attacks` | 1 | 4 kịch bản × 4 PEFT × 3 seed, FedAvg | 48 | ~13 |
 | `E3_defenses` | 1 | {không + 3 tấn công} × 10 phòng thủ (gồm `probe_screen`) × {head, LoRA} | 228 | ~56 |
-| `E7_secagg` | 1 | SecAgg theo nhóm {1,2,4,5,10} × {FedAvg, BurstGuard, Median} | 78 | ~27 |
+| `E7_secagg` | 1 | SecAgg theo nhóm {1,2,4,5,10} × {FedAvg, BurstGuard, Median} + BurstGuard `reject` | 84 | ~30 |
 | `E9_ablation` | 1 | 12 biến thể BurstGuard × {không, scale, constrain} | 108 | ~25 |
 | `E4_sensitivity` | 2 | số site độc {1,2,4} × biên độ {0,5;1;2} × 3 phòng thủ | 81 | ~10 |
 | `E5_lifespan` | 2 | tấn công vòng 10–19 trong 50 vòng | 39 | ~21 |
@@ -328,7 +332,10 @@ và đoạn cuối log. Khi lỗi, `summary.json` có thêm trường `hint` g�
   `neurotoxin` chỉ cập nhật các toạ độ ít thay đổi; `adaptive` thêm burst ngẫu nhiên với nhãn sạch (decoy).
 - **BurstGuard:** chấm điểm mô hình **tổng hợp** (nên dùng được với SecAgg): tìm burst xấu nhất trong vùng
   {δ ≥ 0, w ≤ 6 khe cuối, ≤ 2σ} bằng projected sign-gradient ascent trên cửa sổ probe, đo độ thay đổi tương đối của dự báo
-  so với (i) mô hình vừa chấp nhận và (ii) mô hình gốc. Loại vòng (hoặc loại nhóm khi SecAgg theo nhóm) nếu vượt ngưỡng.
+  so với (i) mô hình vừa chấp nhận và (ii) mô hình gốc. Nếu mô hình tổng hợp vượt ngưỡng: gom lại cập nhật của vòng đó
+  thành 5 nhóm SecAgg ngẫu nhiên, sàng lọc từng nhóm, tổng hợp các nhóm sạch (`on_flag = regroup`; `reject` = bỏ cả vòng).
+  Khi SecAgg theo nhóm cố định (`secagg.groups > 1`): sàng lọc và loại từng nhóm ngay.
+- **Baseline `probe_screen`:** từ chối mô hình tổng hợp nếu sai số trên 256 cửa sổ probe công khai tăng > 5 %.
 - **SecAgg:** engine `flower` dùng giao thức SecAgg+ thật; engine `local` mô phỏng đúng phép cắt ±8 và lượng tử hoá ngẫu nhiên
   2²² mức của Flower. `burstguard equivalence` đối chiếu hai engine.
 

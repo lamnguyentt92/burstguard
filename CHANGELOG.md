@@ -18,6 +18,12 @@ Campaign release: everything needed to produce the paper's numbers in 7 days on 
 - `burstguard analyze all`; `scripts/run_grids.sh --tier pilot|calibration|1|2|system`;
   `scripts/sync_results.sh HOST...` (rsync results from the other VMs);
   `collect_logs.sh --grid a,b` and `--campaign` (all grids + plan + paper artefacts, compact results in the bundle).
+- BurstGuard `on_flag = regroup` (default): a flagged aggregate is not discarded; the round's updates are re-aggregated
+  in `regroup_groups` (5) random secure groups, each group is screened, and the clean groups are averaged (adaptive
+  group testing; extra leakage only in flagged rounds). `reject` keeps the previous behaviour (discard the round),
+  which stalls learning when an attacker participates in every round. Regrouping metrics: `regroup_rounds`,
+  `regroup_tpr_groups`, `regroup_fpr_groups`, `regroup_kept_malicious_rate`. E7 adds the `reject` policy (6 jobs).
+  Not available in the Flower engine with real SecAgg+ (would need a second SecAgg+ pass); there it rejects.
 - Defense baseline `probe_screen`: rejects the (secure) aggregate when the clean error on public probe windows grows
   by more than `defense.probe_tol` (5 %); reported with the same detection metrics as BurstGuard. Added to E3.
 - Client training CPU per round (`client_train_cpu_s_mean`) and job wall time in the analysis.

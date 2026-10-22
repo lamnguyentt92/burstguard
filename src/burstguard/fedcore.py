@@ -193,6 +193,28 @@ class ServerLogic:
                 "probe_err_last": e0, "probe_err_cand": e1}
         return not flag, info
 
+    # ---- BurstGuard follow-up on a flagged aggregate: random regrouping (adaptive group testing)
+    def _regroup(self, rnd: int, theta: np.ndarray, results: list[dict], malicious: list[int]):
+        cfg, sa = self.cfg, self.cfg["secagg"]
+        G = max(2, min(int(cfg["burstguard"]["regroup_groups"]), len(results)))
+        grp = make_groups(len(results), G, self.rng)
+        units, groups = [], []
+        for g in grp:
+            thetas = [results[i]["theta"] for i in g]
+            mt = secure_mean(thetas, cfg, self.rng)[0] if sa["enabled"] else np.mean(thetas, axis=0)
+            units.append(mt - theta); groups.append([results[i]["site"] for i in g])
+        flags, info = self.bg.screen(theta, units, rnd * 7919 + 1)
+        keep = [i for i, f in enumerate(flags) if not f]
+        mal = set(malicious)
+        has = [any(s in mal for s in g) for g in groups]
+        rinfo = {**info, "level": "regroup", "unit_sites": groups, "unit_has_malicious": has, "kept": keep,
+                 "kept_has_malicious": any(has[i] for i in keep)}
+        if not keep:
+            return None, rinfo
+        w = np.array([len(groups[i]) for i in keep], dtype=np.float64)
+        delta = np.sum([wi * units[i] for wi, i in zip(w, keep)], axis=0) / w.sum()
+        return delta.astype(np.float32), rinfo
+
     # ---- aggregation
     def aggregate(self, rnd: int, theta: np.ndarray, results: list[dict],
                   secure_mean_theta: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
@@ -246,13 +268,22 @@ class ServerLogic:
             flags, binfo = self.bg.screen(theta, [delta], rnd)
             rec["burstguard"] = {**binfo, "level": "aggregate"}
             accepted = not flags[0]
+            # flagged aggregate: instead of discarding the whole round, re-aggregate the same updates in random
+            # secure groups and keep the groups that pass (needs a second secure-aggregation pass; emulated here)
+            if (not accepted and self.cfg["burstguard"]["on_flag"] == "regroup" and secure_mean_theta is None
+                    and len(results) > 1):
+                d2, rinfo = self._regroup(rnd, theta, results, rec["malicious_in_round"])
+                rec["burstguard_regroup"] = rinfo
+                if d2 is not None:
+                    delta, accepted = d2, True
+                    rec["selected_has_malicious"] = rinfo["kept_has_malicious"]
         if accepted and self._ps_idx is not None:
             ok, pinfo = self._probe_screen(theta, theta + delta)
             rec["probe_screen"] = pinfo
             accepted = ok
         new_theta = theta + delta if accepted else theta.copy()
         if self.bg is not None and accepted:
-            bi = rec.get("burstguard", {})
+            bi = rec.get("burstguard_regroup") or rec.get("burstguard", {})
             fl = bi.get("would_flag", [])  # monitor mode: thresholds evolve as if enforcing
             self.bg.accept(new_theta, [s for s, f in zip(bi.get("score_last", []), fl) if not f],
                            [s for s, f in zip(bi.get("score_anchor", []), fl) if not f])

@@ -46,3 +46,16 @@ def test_local_engine_runs(tmp_path, data_path, extra):
     rounds = [r for r in recs if r["kind"] == "round"]
     assert all(r["v"] for r in recs) and rounds[0]["malicious_in_round"]
     assert any(c["role"] == "malicious" for c in rounds[0]["clients"])
+
+
+def test_burstguard_regroup_path(tmp_path, data_path):
+    """A flagged aggregate triggers random regrouping; with near-zero thresholds every group is flagged too."""
+    from burstguard.engines.local import run_local
+    cfg = _cfg(data_path, ['attack.type="scale"', 'defense.name="burstguard"', "burstguard.threshold=1e-9",
+                           "burstguard.threshold_anchor=1e-9", "burstguard.regroup_groups=2"])
+    res = run_local(cfg, tmp_path)
+    rounds = [json.loads(l) for l in (tmp_path / "metrics.jsonl").read_text().splitlines()]
+    rounds = [r for r in rounds if r["kind"] == "round"]
+    rg = [r["burstguard_regroup"] for r in rounds if r.get("burstguard_regroup")]
+    assert rg and all(len(x["unit_sites"]) == 2 for x in rg) and not any(r["accepted"] for r in rounds)
+    assert res["detection"]["regroup_rounds"] == len(rg)

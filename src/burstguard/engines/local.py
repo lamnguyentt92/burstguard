@@ -99,6 +99,10 @@ def run_local(cfg: dict[str, Any], run_dir: Path, log=print) -> dict[str, Any]:
                 return f"{max(v):.3f}" if v else "-"
             bgs = (f" bg_last={_mx(bgi['score_last'])}/{bgi['threshold']:.2f} bg_anchor={_mx(bgi['score_anchor'])}/"
                    f"{bgi['threshold_anchor']:.2f}{' FLAG' if any(bgi['would_flag']) else ''}") if bgi else ""
+            rgi = rec.get("burstguard_regroup")
+            if rgi:
+                bgs += (f" -> regroup: kept {len(rgi['kept'])}/{len(rgi['unit_sites'])} groups"
+                        f"{' (malicious group kept!)' if rgi['kept_has_malicious'] else ''}")
             psi = rec.get("probe_screen")
             if psi:
                 bgs += (f" probe_err={psi['probe_err_cand']:.4f} (last {psi['probe_err_last']:.4f}, "

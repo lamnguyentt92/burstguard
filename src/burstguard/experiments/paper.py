@@ -358,7 +358,8 @@ def fig_secagg(root: Path, fdir: Path, made: list[str], numbers: dict) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(7.0, 2.1))
     numbers["secagg"] = {}
     for d in ("fedavg", "median", "burstguard"):
-        rs = sorted([r for r in rows if r.get("defense.name") == d], key=lambda r: int(r.get("secagg.groups") or 1))
+        rs = sorted([r for r in rows if r.get("defense.name") == d and r.get("burstguard.on_flag") != "reject"],
+                    key=lambda r: int(r.get("secagg.groups") or 1))
         att = [r for r in rs if r.get("attack.type") == "scale"]
         cln = [r for r in rs if r.get("attack.type") == "none"]
         lab = DEFENSE_TEX[d].replace("\\textbf{", "").replace("}", "")
@@ -379,6 +380,18 @@ def fig_secagg(root: Path, fdir: Path, made: list[str], numbers: dict) -> None:
             numbers["secagg"][f"{d}/{r.get('attack.type')}/g{r.get('secagg.groups')}"] = {
                 "asr": _num(r.get("asr")), "mase": _num(r.get("mase_daily")), "tpr_units": _num(r.get("tpr_units")),
                 "fpr_units": _num(r.get("fpr_units")), "server_cpu_s": _num(r.get("server_defense_cpu_s_mean"))}
+    rej = {r.get("attack.type"): r for r in rows if r.get("burstguard.on_flag") == "reject"}
+    if rej.get("scale"):
+        axes[0].scatter([1], [_nan(rej["scale"].get("asr"))], marker="x", color="k", zorder=5,
+                        label="BurstGuard, reject round")
+    if rej.get("none"):
+        axes[1].scatter([1], [_nan(rej["none"].get("mase_daily"))], marker="x", color="k", zorder=5,
+                        label="BurstGuard, reject round")
+    if rej.get("scale"):
+        r = rej["scale"]
+        numbers["secagg"]["burstguard_reject/scale/g1"] = {"asr": _num(r.get("asr")), "mase": _num(r.get("mase_daily"))}
+        clean_ref = rej.get("none")
+        numbers["secagg"]["burstguard_reject/none/g1"] = {"mase": _num((clean_ref or {}).get("mase_daily"))}
     axes[0].set_title("ASR under model replacement"); axes[0].set_ylim(0, 1)
     axes[1].set_title("Clean MASE"); axes[2].set_title("BurstGuard per-group detection"); axes[2].set_ylim(0, 1.02)
     for ax in axes:
