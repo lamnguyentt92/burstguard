@@ -7,6 +7,9 @@ Some mirrors add a header (CellID, datetime, countrycode, ..., internet) and/or 
 Files may be .txt, .csv, .gz or .zip.
 
 Milan grid: 100x100 squares (~235 m), IDs 1..10000, assumed row-major: id-1 = row*100 + col.
+
+Traffic types (`activities`): internet (default, the paper's main data), sms = smsin + smsout, call = callin + callout.
+All types come from the same files and the same site/probe blocks; several are extracted in one pass.
 """
 from __future__ import annotations
 
@@ -32,7 +35,20 @@ NAME_ALIASES = {
     "square": {"square_id", "squareid", "cellid", "cell_id", "gridid", "grid_id", "square"},
     "time": {"time_interval", "timeinterval", "datetime", "time", "timestamp"},
     "internet": {"internet", "internet_traffic", "internettraffic"},
+    "smsin": {"smsin", "sms_in", "sms-in"},
+    "smsout": {"smsout", "sms_out", "sms-out"},
+    "callin": {"callin", "call_in", "call-in"},
+    "callout": {"callout", "call_out", "call-out"},
 }
+RAW_COLS = {"square": 0, "time": 1, "smsin": 3, "smsout": 4, "callin": 5, "callout": 6, "internet": 7}
+ACTIVITIES = {"internet": ("internet",), "sms": ("smsin", "smsout"), "call": ("callin", "callout")}
+CHUNK_ROWS = 2_000_000   # rows per read chunk: bounded memory (prepare can run next to experiments)
+
+
+def processed_name(activity: str) -> str:
+    """File name of a processed dataset: internet keeps the historic name milan_d<format>.npz."""
+    from burstguard import DATA_FORMAT
+    return f"milan_d{DATA_FORMAT}.npz" if activity == "internet" else f"milan_{activity}_d{DATA_FORMAT}.npz"
 
 
 def list_raw_files(raw_dir: str | Path, region: str = "mi") -> list[Path]:
@@ -74,30 +90,46 @@ def _sniff(path: Path) -> tuple[str, bool]:
     return delim, has_header
 
 
-def read_day(path: str | Path, squares: set[int] | None = None) -> pd.DataFrame:
-    """Read one day file -> DataFrame [square:int, slot:int, internet:float], summed over country codes."""
+def read_day(path: str | Path, squares: set[int] | None = None,
+             activities: tuple[str, ...] = ("internet",)) -> pd.DataFrame:
+    """Read one day file -> DataFrame [square:int, slot:int, <activity>:float ...], summed over country codes
+    (sms = smsin + smsout, call = callin + callout). Read in chunks and filtered to `squares` per chunk."""
     path = Path(path)
+    for a in activities:
+        if a not in ACTIVITIES:
+            raise ValueError(f"unknown activity {a!r} (choose from {sorted(ACTIVITIES)})")
+    raw = sorted({c for a in activities for c in ACTIVITIES[a]}, key=lambda c: RAW_COLS[c])
     delim, has_header = _sniff(path)
     src = _open_text(path)
     if has_header:
-        df = pd.read_csv(src, sep=delim, low_memory=False)
-        cols = {c: c.strip().lower() for c in df.columns}
-        df = df.rename(columns=cols)
+        head = pd.read_csv(_open_text(path), sep=delim, nrows=0)
+        lower = {c.strip().lower(): c for c in head.columns}
         pick = {}
-        for want, aliases in NAME_ALIASES.items():
-            hit = [c for c in df.columns if c in aliases]
+        for want in ["square", "time"] + raw:
+            hit = [lower[c] for c in lower if c in NAME_ALIASES[want]]
             if not hit:
-                raise ValueError(f"{path.name}: column '{want}' not found in header {list(df.columns)}")
+                raise ValueError(f"{path.name}: column '{want}' not found in header {list(head.columns)}")
             pick[want] = hit[0]
-        df = df[[pick["square"], pick["time"], pick["internet"]]]
-        df.columns = ["square", "time", "internet"]
+        reader = pd.read_csv(src, sep=delim, usecols=list(pick.values()), low_memory=False, chunksize=CHUNK_ROWS)
+        rename = {v: k for k, v in pick.items()}
     else:
-        df = pd.read_csv(src, sep=delim, header=None, usecols=[0, 1, 7],
-                         names=["square", "time", "internet"], low_memory=False)
-    df = df.dropna(subset=["square", "time"])
-    df["square"] = df["square"].astype(np.int64)
-    if squares is not None:
-        df = df[df["square"].isin(squares)]
+        cols = ["square", "time"] + raw
+        reader = pd.read_csv(src, sep=delim, header=None, usecols=[RAW_COLS[c] for c in cols], names=None,
+                             low_memory=False, chunksize=CHUNK_ROWS)
+        rename = {RAW_COLS[c]: c for c in cols}
+    parts = []
+    for ch in reader:
+        ch = ch.rename(columns=rename)
+        ch = ch.dropna(subset=["square", "time"])
+        ch["square"] = ch["square"].astype(np.int64)
+        if squares is not None:
+            ch = ch[ch["square"].isin(squares)]
+        if len(ch):
+            parts.append(ch)
+    cols_out = ["square", "slot"] + list(activities)
+    if not parts:
+        return pd.DataFrame(columns=cols_out)
+    df = pd.concat(parts, ignore_index=True)
     t = df["time"]
     if pd.api.types.is_numeric_dtype(t):
         ms = t.astype(np.int64)
@@ -107,35 +139,48 @@ def read_day(path: str | Path, squares: set[int] | None = None) -> pd.DataFrame:
             ts = ts.dt.tz_localize("Europe/Rome")
         ms = (ts.dt.tz_convert("UTC").astype("int64") // 1_000_000)
     df["slot"] = ((ms - T0_MS) // SLOT_MS).astype(np.int64)
-    df["internet"] = pd.to_numeric(df["internet"], errors="coerce").fillna(0.0)
-    return df.groupby(["square", "slot"], as_index=False)["internet"].sum()
+    for c in raw:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for a in activities:
+        if ACTIVITIES[a] != (a,):
+            df[a] = sum(df[c] for c in ACTIVITIES[a])
+    return df.groupby(["square", "slot"], as_index=False)[list(activities)].sum()[cols_out]
 
 
-def build_square_matrix(files: Iterable[Path], squares: list[int], T: int,
-                        log=print) -> tuple[np.ndarray, dict]:
-    """Merge day files into a matrix [len(squares), T]. A slot missing for one square -> 0 (no activity);
-    a slot missing for ALL squares (outage) -> linear interpolation."""
+def build_square_matrices(files: Iterable[Path], squares: list[int], T: int, activities: tuple[str, ...],
+                          log=print) -> tuple[dict[str, np.ndarray], dict]:
+    """Merge day files into one matrix [len(squares), T] per activity. A slot missing for one square -> 0
+    (no activity); a slot missing for ALL squares (outage) -> linear interpolation."""
     sq_index = {s: i for i, s in enumerate(squares)}
-    M = np.zeros((len(squares), T), dtype=np.float64)
+    Ms = {a: np.zeros((len(squares), T), dtype=np.float64) for a in activities}
     seen = np.zeros(T, dtype=bool)
     sqset = set(squares)
     files = list(files)
     for k, f in enumerate(files, 1):
-        df = read_day(f, sqset)
+        df = read_day(f, sqset, activities)
         df = df[(df["slot"] >= 0) & (df["slot"] < T)]
         rows = df["square"].map(sq_index).to_numpy()
-        cols = df["slot"].to_numpy()
-        np.add.at(M, (rows, cols), df["internet"].to_numpy())
+        cols = df["slot"].to_numpy().astype(np.int64)
+        for a in activities:
+            np.add.at(Ms[a], (rows, cols), df[a].to_numpy())
         seen[np.unique(cols)] = True
         log(f"  [{k}/{len(files)}] {f.name}: {len(df):,} records, {len(np.unique(cols))} slots")
     gaps = np.where(~seen)[0]
     if len(gaps) and seen.any():
         idx = np.arange(T)
-        for i in range(M.shape[0]):
-            M[i, ~seen] = np.interp(idx[~seen], idx[seen], M[i, seen])
+        for M in Ms.values():
+            for i in range(M.shape[0]):
+                M[i, ~seen] = np.interp(idx[~seen], idx[seen], M[i, seen])
     stats = {"files": len(files), "slots_total": T, "slots_missing_all_squares": int(len(gaps)),
              "missing_frac": float(len(gaps) / T)}
-    return M.astype(np.float32), stats
+    return {a: M.astype(np.float32) for a, M in Ms.items()}, stats
+
+
+def build_square_matrix(files: Iterable[Path], squares: list[int], T: int,
+                        log=print) -> tuple[np.ndarray, dict]:
+    """Internet traffic only (historic interface)."""
+    Ms, stats = build_square_matrices(files, squares, T, ("internet",), log=log)
+    return Ms["internet"], stats
 
 
 def choose_blocks(num_sites: int, num_probe: int, block: int = 5, grid: int = GRID):
@@ -172,8 +217,9 @@ def choose_blocks(num_sites: int, num_probe: int, block: int = 5, grid: int = GR
     return sites, probes
 
 
-def prepare(raw_dir: str | Path, num_sites: int = 20, num_probe: int = 8, block: int = 5,
-            days: int = DAYS_DEFAULT, log=print):
+def prepare_multi(raw_dir: str | Path, activities: tuple[str, ...] = ("internet",), num_sites: int = 20,
+                  num_probe: int = 8, block: int = 5, days: int = DAYS_DEFAULT, log=print):
+    """One pass over the raw files -> {activity: (series, probe, meta, bounds)} with the same site/probe blocks."""
     files = list_raw_files(raw_dir, "mi")
     if not files:
         raise FileNotFoundError(
@@ -184,15 +230,23 @@ def prepare(raw_dir: str | Path, num_sites: int = 20, num_probe: int = 8, block:
     if len(sites) < num_sites or len(probes) < num_probe:
         raise ValueError("could not select enough site/probe blocks - reduce num_sites/num_probe or block")
     all_sq = sorted({s for g in sites + probes for s in g["squares"]})
-    log(f"Reading {len(files)} files, keeping {len(all_sq)} squares ({num_sites} sites + {num_probe} probe blocks, {block}x{block})")
-    M, stats = build_square_matrix(files, all_sq, T, log=log)
+    log(f"Reading {len(files)} files, keeping {len(all_sq)} squares ({num_sites} sites + {num_probe} probe blocks, "
+        f"{block}x{block}); traffic: {', '.join(activities)}")
+    Ms, stats = build_square_matrices(files, all_sq, T, tuple(activities), log=log)
     pos = {s: i for i, s in enumerate(all_sq)}
-    def agg(groups):
-        return np.stack([M[[pos[s] for s in g["squares"]]].sum(axis=0) for g in groups])
-    series, probe = agg(sites), agg(probes)
     covered = sorted({FILE_RE.search(f.name).group(2) for f in files})
-    meta = {"source": "milan", "freq_min": FREQ_MIN, "start": "2013-11-01T00:00:00+01:00",
-            "block": block, "sites": sites, "probes": probes, "raw_stats": stats,
-            "dates_covered": [covered[0], covered[-1]], "num_files": len(files),
-            "license": "ODbL - Telecom Italia Big Data Challenge (Barlacchi et al. 2015)"}
-    return series, probe, meta, split_bounds(T)
+    out = {}
+    for a, M in Ms.items():
+        def agg(groups):
+            return np.stack([M[[pos[s] for s in g["squares"]]].sum(axis=0) for g in groups])
+        meta = {"source": "milan", "activity": a, "freq_min": FREQ_MIN, "start": "2013-11-01T00:00:00+01:00",
+                "block": block, "sites": sites, "probes": probes, "raw_stats": stats,
+                "dates_covered": [covered[0], covered[-1]], "num_files": len(files),
+                "license": "ODbL - Telecom Italia Big Data Challenge (Barlacchi et al. 2015)"}
+        out[a] = (agg(sites), agg(probes), meta, split_bounds(T))
+    return out
+
+
+def prepare(raw_dir: str | Path, num_sites: int = 20, num_probe: int = 8, block: int = 5,
+            days: int = DAYS_DEFAULT, log=print, activity: str = "internet"):
+    return prepare_multi(raw_dir, (activity,), num_sites, num_probe, block, days, log)[activity]

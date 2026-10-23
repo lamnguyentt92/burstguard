@@ -45,6 +45,7 @@ TIERS = {
     "1": ["E1_clean", "E2_attacks", "E3_defenses", "E7_secagg", "E9_ablation"],
     "2": ["E4_sensitivity", "E5_lifespan", "E6_adaptive"],
     "system": ["E8_system"],
+    "generalization": ["X1_traffic_clean", "X2_traffic_defenses"],
 }
 
 

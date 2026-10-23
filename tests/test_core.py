@@ -76,6 +76,19 @@ def test_milan_reader_and_prepare(tmp_path):
     assert s.shape == (3, 3 * 144) and p.shape == (2, 3 * 144) and (s > 0).all()
     ds = load_dataset(save_dataset(tmp_path / "m.npz", s, p, meta, b))
     assert ds.num_sites == 3 and ds.meta["data_format"] == 1
+    # several traffic types in one pass: same blocks; internet identical to the single-type path
+    multi = milan.prepare_multi(raw, ("internet", "sms", "call"), num_sites=3, num_probe=2, block=2, days=3)
+    assert np.array_equal(multi["internet"][0], s) and np.array_equal(multi["internet"][1], p)
+    # fake files: smsout = 0.1 for 2 country codes, smsin/callin/callout empty; 2x2 squares per block
+    assert np.allclose(multi["sms"][0], 0.1 * 2 * 4) and np.allclose(multi["call"][0], 0.0)
+    assert multi["sms"][2]["activity"] == "sms" and multi["sms"][2]["sites"] == meta["sites"]
+    assert milan.processed_name("internet") == "milan_d1.npz" and milan.processed_name("call") == "milan_call_d1.npz"
+    milan.CHUNK_ROWS = 97                                   # many small chunks give the same result
+    try:
+        again = milan.prepare_multi(raw, ("internet", "sms"), num_sites=3, num_probe=2, block=2, days=3)
+    finally:
+        milan.CHUNK_ROWS = 2_000_000
+    assert np.array_equal(again["internet"][0], s) and np.array_equal(again["sms"][0], multi["sms"][0])
 
 
 def test_trigger_and_backdoor_metrics():
@@ -268,6 +281,17 @@ def test_rule_replay_from_monitor_run(tmp_path):
     assert rf["last"] == [0, 0, 0, 0, 0, 1, 0, 0, 0, 0]          # S_last only sees the injection round
     assert rf["anchor"] == [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]        # S_anchor only the accumulated rounds
     assert rf["fixed_anchor"] == [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+
+
+def test_generalization_grids():
+    from burstguard.experiments.grid import expand, load_grid
+    from burstguard.paths import ROOT
+    x1 = expand(load_grid(ROOT / "experiments" / "X1_traffic_clean.toml"))
+    x2 = expand(load_grid(ROOT / "experiments" / "X2_traffic_defenses.toml"))
+    assert len(x1) == 18 and len(x2) == 64
+    paths = {j["overrides"]["data.path"] for j in x1 + x2}
+    assert paths == {"shared:data/processed/milan_sms_d1.npz", "shared:data/processed/milan_call_d1.npz"}
+    assert not any(j["overrides"].get("train.peft") == "lora" and j["overrides"]["run.seed"] == 1 for j in x2)
 
 
 def test_plan_cost_model():

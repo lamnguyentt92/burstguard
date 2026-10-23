@@ -86,15 +86,38 @@ def cmd_data_prepare(a, ctx):
     from burstguard.data import milan
     from burstguard.data.store import describe, load_dataset, save_dataset
     t0 = time.time()
-    s, p, meta, b = milan.prepare(resolve(a.raw), a.sites, a.probe, a.block, days=a.days)
-    out = save_dataset(resolve(a.out), s, p, meta, b)
-    d = describe(load_dataset(out))
-    ctx.save_json("dataset_info.json", {**d, "sites_meta": meta["sites"], "probes_meta": meta["probes"]})
-    ctx.set(out=str(out), num_sites=d["num_sites"], T=d["T"], seconds=round(time.time() - t0, 1), raw_stats=meta["raw_stats"])
-    print(f"processed: {out} ({d['num_sites']} sites x {d['T']} slots; slots missing for all squares: "
-          f"{meta['raw_stats']['slots_missing_all_squares']})")
-    for r in d["per_site"]:
-        print(f"  site {r['site']:2d}: mean={r['mean']:10.1f} std(train)={r['std_train']:9.1f} zero_frac={r['zero_frac']:.3f}")
+    acts = [x.strip() for x in str(a.activity).split(",") if x.strip()]
+    acts = list(milan.ACTIVITIES) if acts == ["all"] else acts
+    bad = [x for x in acts if x not in milan.ACTIVITIES]
+    if bad or not acts:
+        raise ValueError(f"--activity: unknown {bad} (choose from {', '.join(milan.ACTIVITIES)}, or all)")
+    if a.out and len(acts) > 1:
+        raise ValueError("--out can only be used with a single --activity")
+    outdir = resolve("shared:data/processed")
+    outs = {x: (resolve(a.out) if a.out else outdir / milan.processed_name(x)) for x in acts}
+    todo = [x for x in acts if a.force or not outs[x].exists()]
+    for x in acts:
+        if x not in todo:
+            print(f"exists, skipped (use --force to rebuild): {outs[x]}")
+    if not todo:
+        ctx.set(out=[str(v) for v in outs.values()], skipped=True)
+        return
+    res = milan.prepare_multi(resolve(a.raw), tuple(todo), a.sites, a.probe, a.block, days=a.days)
+    summary = {}
+    for x in todo:
+        s, p, meta, b = res[x]
+        out = save_dataset(outs[x], s, p, meta, b)
+        d = describe(load_dataset(out))
+        ctx.save_json(f"dataset_info_{x}.json", {**d, "sites_meta": meta["sites"], "probes_meta": meta["probes"]})
+        summary[x] = {"out": str(out), "num_sites": d["num_sites"], "T": d["T"]}
+        print(f"processed ({x}): {out} ({d['num_sites']} sites x {d['T']} slots; slots missing for all squares: "
+              f"{meta['raw_stats']['slots_missing_all_squares']})")
+        for r in d["per_site"]:
+            print(f"  site {r['site']:2d}: mean={r['mean']:10.1f} std(train)={r['std_train']:9.1f} zero_frac={r['zero_frac']:.3f}")
+        zf = max(r["zero_frac"] for r in d["per_site"])
+        if zf > 0.2:
+            print(f"WARNING ({x}): a site has {100 * zf:.0f} % zero slots - forecasts and MASE may be unstable")
+    ctx.set(datasets=summary, seconds=round(time.time() - t0, 1), raw_stats=res[todo[0]][2]["raw_stats"])
 
 
 def cmd_data_info(a, ctx):
@@ -329,7 +352,7 @@ def cmd_paper(a, ctx):
 def cmd_plan(a, ctx):
     from pathlib import Path as _P
     from burstguard.experiments import plan as PL
-    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system"])
+    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system", "generalization"])
                         for n in PL.TIERS.get(t, [])]
     files = [resolve(n) if n.endswith(".toml") else ROOT / "experiments" / f"{n}.toml" for n in names]
     files = [f for f in files if _P(f).exists()]
@@ -498,7 +521,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true", help="overwrite an existing response file with a fresh template")
     s.set_defaults(fn=cmd_data_guestbook)
     s = d.add_parser("prepare", help="raw Milan files -> processed dataset")
-    s.add_argument("--raw", default=str(RAW_DIR / "milan")); s.add_argument("--out", default="shared:data/processed/milan_d1.npz")
+    s.add_argument("--raw", default=str(RAW_DIR / "milan"))
+    s.add_argument("--activity", default="internet",
+                   help="traffic type(s), comma list: internet (default, milan_d1.npz), sms (milan_sms_d1.npz), "
+                        "call (milan_call_d1.npz) or all; several types are read in one pass")
+    s.add_argument("--out", default="", help="output file (single --activity only; default shared:data/processed/...)")
+    s.add_argument("--force", action="store_true", help="rebuild files that already exist")
     s.add_argument("--sites", type=int, default=20); s.add_argument("--probe", type=int, default=8)
     s.add_argument("--block", type=int, default=5); s.add_argument("--days", type=int, default=62)
     s.set_defaults(fn=cmd_data_prepare, name="prepare")
@@ -547,7 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_paper)
     s = sub.add_parser("plan", help="estimate remaining campaign time from finished jobs")
     s.add_argument("grids", nargs="*", help="grid names or files (default: all tiers)")
-    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system")
+    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system,generalization")
     s.add_argument("--shards", type=int, default=5)
     s.add_argument("--weights", default="", help="w1,...,wN shard weights (default: $BURSTGUARD_SHARED/cluster.weights "
                                                   "if it exists, else equal shards)")

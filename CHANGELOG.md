@@ -3,6 +3,30 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.6] — 2026-10-23
+
+Generalisation experiment; experiment code unchanged (`EXPERIMENT_CODE` stays "0.3.5", so 0.3.5 results are imported
+and merged without warnings).
+
+### Added
+- SMS (smsin + smsout) and call (callin + callout) traffic of the same Milan files, sites and probe blocks:
+  `burstguard data prepare --activity sms,call|internet|all` reads the raw files once for several traffic types,
+  in 2M-row chunks filtered to the selected squares (bounded memory, safe next to running experiments); writes
+  `milan_sms_d1.npz` / `milan_call_d1.npz` (internet keeps `milan_d1.npz`, which is never rewritten unless `--force`).
+  The internet series are bit-identical to 0.3.5 (test against the previous reader).
+- Grids `X1_traffic_clean` (18 jobs: FL head/LoRA, local-only and centralised head, zero-shot) and
+  `X2_traffic_defenses` (64 jobs: none / boost 10 / boost 3 x FedAvg, Median, probe-loss check, BurstGuard; head
+  2 seeds, LoRA seed 0) for both traffic types; tier `generalization` (`run_grids.sh`, `plan`).
+- `run_grids.sh --wait-idle`: waits until background runs of other checkouts on the machine
+  (`~/burstguard*/logs/cluster_*.pid`) have finished; `cluster.sh start "--wait-idle --tier generalization"` queues
+  the new grids behind the running campaign on every machine.
+- Paper: `tables/generalization.tex` (internet from E1/E3, SMS and calls from X1/X2).
+
+### Changed
+- `cluster.sh push-data` copies every `milan*_d*.npz`, with `rsync --checksum` (unchanged files are not rewritten,
+  changed ones are replaced atomically) or, without rsync, only files missing on the machine.
+- `burstguard data prepare` skips outputs that already exist (use `--force`).
+
 ## [0.3.5] — 2026-10-22
 
 Replaces 0.3.4 (never run) after the complete P0 pilot of v0.3.2 (10/10 jobs). New experiment code

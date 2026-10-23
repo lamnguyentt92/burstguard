@@ -11,6 +11,10 @@
 #   bash scripts/run_grids.sh 2/5 E3_defenses E7_secagg # explicit grids
 #   bash scripts/run_grids.sh 1/1 --quick E3_defenses   # pipeline check
 #   bash scripts/run_grids.sh 2/5@4,1,3,1,3 --tier 1    # weighted shard (scripts/cluster.sh does this for you)
+#   bash scripts/run_grids.sh 2/5 --tier generalization # X1, X2: SMS and call traffic (data prepare --activity sms,call)
+#   bash scripts/run_grids.sh 2/5 --wait-idle --tier generalization
+#                                    # first wait until background runs of OTHER checkouts on this machine have
+#                                    # finished (their logs/cluster_*.pid processes), so two versions never share CPUs
 # E8_system (timings) runs on ONE idle VM: bash scripts/run_grids.sh 1/1 --tier system
 # Log: logs/run_grids_v<VERSION>_<shard>_<ts>.log
 set -u
@@ -21,10 +25,11 @@ SHARD="${1:-}"
 [[ "$SHARD" =~ ^[0-9]+/[0-9]+(@[0-9.]+(,[0-9.]+)*)?$ ]] || {
   echo "usage: bash scripts/run_grids.sh K/N[@w1,...,wN] [--quick] [--tier T] [GRID ...]"; exit 2; }
 shift
-QUICK=(); TIERS=""; GRIDS=()
+QUICK=(); TIERS=""; GRIDS=(); WAIT_IDLE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --quick) QUICK=(--quick) ;;
+    --wait-idle) WAIT_IDLE=1 ;;
     --tier) TIERS="${2:-}"; shift ;;
     *) GRIDS+=("$1") ;;
   esac
@@ -37,6 +42,7 @@ tier_grids() {
     1) echo "E1_clean E2_attacks E3_defenses E7_secagg E9_ablation" ;;
     2) echo "E4_sensitivity E5_lifespan E6_adaptive" ;;
     system) echo "E8_system" ;;
+    generalization) echo "X1_traffic_clean X2_traffic_defenses" ;;
     *) echo "" ;;
   esac
 }
@@ -56,6 +62,24 @@ fi
 source .venv/bin/activate
 
 mkdir -p logs
+# --wait-idle: wait for background runs of other checkouts (e.g. ~/burstguard-v0.3.5/logs/cluster_bg.pid)
+others_busy() {
+  local pf p
+  for pf in "$HOME"/burstguard*/logs/cluster_*.pid; do
+    [ -f "$pf" ] || continue
+    case "$(cd "$(dirname "$pf")/.." && pwd)" in "$ROOT") continue ;; esac
+    p="$(cat "$pf" 2>/dev/null)"
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "$pf (pid $p)"; return 0; fi
+  done
+  return 1
+}
+if [ "$WAIT_IDLE" = 1 ]; then
+  while busy="$(others_busy)"; do
+    echo "[burstguard v$VER] $(date -Iseconds) waiting: another checkout is still running on this machine: $busy (check every 5 min)"
+    sleep "${WAIT_IDLE_SEC:-300}"
+  done
+  echo "[burstguard v$VER] $(date -Iseconds) machine idle - starting"
+fi
 TS="$(date +%Y%m%d-%H%M%S)"
 SH_NAME="${SHARD%%@*}"                     # log name without the weights (they are printed inside the log)
 LOG="logs/run_grids_v${VER}_${SH_NAME/\//of}_${TS}.log"

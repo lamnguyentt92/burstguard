@@ -351,6 +351,65 @@ def table_ablation(root: Path, tdir: Path, numbers: dict) -> str | None:
     return "tables/ablation.tex"
 
 
+TRAFFIC = [("Internet", None), ("SMS", "shared:data/processed/milan_sms_d1.npz"),
+           ("Calls", "shared:data/processed/milan_call_d1.npz")]
+
+
+def table_generalization(root: Path, tdir: Path, numbers: dict) -> str | None:
+    """Three traffic types of the same sites: internet (E1, E3) and SMS / calls (X1, X2)."""
+    x1, x2 = _load(root, "X1_traffic_clean"), _load(root, "X2_traffic_defenses")
+    if not x1 and not x2:
+        return None
+    e1, e3 = _load(root, "E1_clean"), _load(root, "E3_defenses")
+    body = []
+    numbers["generalization"] = {}
+    for tname, path in TRAFFIC:
+        clean_rows = (e1[0] if e1 else []) if path is None else (x1[0] if x1 else [])
+        def_rows = (e3[0] if e3 else []) if path is None else (x2[0] if x2 else [])
+        kw = {} if path is None else {"data__path": path}
+        zs = pick(clean_rows, job__kind="zeroshot", **kw)
+        for peft in ("head", "lora"):
+            fl = pick(clean_rows, job__kind="fl", train__peft=peft, **kw)
+            ref = pick_att(def_rows, "none", defense__name="fedavg", train__peft=peft, **kw) or fl
+            f10 = pick_att(def_rows, "scale", defense__name="fedavg", train__peft=peft, **kw)
+            f3 = pick_att(def_rows, "scale@3", defense__name="fedavg", train__peft=peft, **kw)
+            p3 = pick_att(def_rows, "scale@3", defense__name="probe_screen", train__peft=peft, **kw)
+            b10 = pick_att(def_rows, "scale", defense__name="burstguard", train__peft=peft, **kw)
+            b3 = pick_att(def_rows, "scale@3", defense__name="burstguard", train__peft=peft, **kw)
+            b0 = pick_att(def_rows, "none", defense__name="burstguard", train__peft=peft, **kw)
+            if not any((fl, f10, f3, b3)):
+                continue
+            d3 = None
+            if f3 and ref and _num(f3.get("mase_daily")) and _num(ref.get("mase_daily")):
+                d3 = 100 * (f3["mase_daily"] / ref["mase_daily"] - 1)
+            g = lambda r, m, k=2: fmt((r or {}).get(m), k)  # noqa: E731
+            body.append([tname if peft == "head" else "", PEFT_TEX[peft], g(zs, "mase_daily", 3) if peft == "head" else "",
+                         g(fl, "mase_daily", 3), f"{g(f10, 'upr_trig')} / {g(f3, 'upr_trig')}",
+                         "--" if d3 is None else f"{d3:+.1f}", g(p3, "upr_trig"),
+                         f"{g(b10, 'upr_trig')} / {g(b3, 'upr_trig')}", g(b3 or b10, "mase_daily", 3), g(b0, "fpr_units")])
+            numbers["generalization"][f"{tname}/{peft}"] = {
+                "mase_zeroshot": _num((zs or {}).get("mase_daily")), "mase_fl": _num((fl or {}).get("mase_daily")),
+                "upr_fedavg_g10": _num((f10 or {}).get("upr_trig")), "upr_fedavg_g3": _num((f3 or {}).get("upr_trig")),
+                "dmase_fedavg_g3_pct": d3, "upr_probe_g3": _num((p3 or {}).get("upr_trig")),
+                "upr_bg_g10": _num((b10 or {}).get("upr_trig")), "upr_bg_g3": _num((b3 or {}).get("upr_trig")),
+                "fpr_bg": _num((b0 or {}).get("fpr_units"))}
+        if body and tname != TRAFFIC[-1][0]:
+            body.append(["--midrule--"])
+    while body and body[-1] == ["--midrule--"]:
+        body.pop()
+    if not body:
+        return None
+    cap = ("Generalisation to three traffic types of the same 20 sites (internet: E1/E3; SMS and calls: X1/X2). "
+           "Clean test MASE of TTM zero-shot and federated fine-tuning; UPR$_{trig}$ under model replacement "
+           "($\\gamma$=10) / the covert attacker ($\\gamma$=3) with FedAvg, the covert attacker's damage to clean MASE, "
+           "UPR$_{trig}$ with the probe-loss check ($\\gamma$=3) and with BurstGuard ($\\gamma$=10 / $\\gamma$=3), "
+           "BurstGuard's MASE under attack and its false-positive rate on clean rounds.")
+    hdr = ["Traffic", "Tuned", "Zero-shot", "FL", "FedAvg UPR", "$\\Delta$MASE\\% ($\\gamma$=3)", "Probe UPR",
+           "BurstGuard UPR", "BG MASE", "FPR"]
+    (tdir / "generalization.tex").write_text(_tabular("llrrcrrcrr", hdr, body, cap, "tab:generalization"))
+    return "tables/generalization.tex"
+
+
 def table_system(root: Path, tdir: Path, numbers: dict) -> str | None:
     t = _load(root, "E8_system")
     if not t:
@@ -627,6 +686,7 @@ def export(root: Path, out: Path | None = None, dataset: Path | None = None, log
                      ("vulnerability (E2)", lambda: table_vulnerability(root, tdir, numbers)),
                      ("defenses (E3)", lambda: table_defenses(root, tdir, numbers)),
                      ("ablation (E9)", lambda: table_ablation(root, tdir, numbers)),
+                     ("generalization (X1/X2)", lambda: table_generalization(root, tdir, numbers)),
                      ("system (E8)", lambda: table_system(root, tdir, numbers))]:
         try:
             p = fn()

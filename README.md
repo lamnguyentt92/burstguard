@@ -10,7 +10,8 @@ Mục tiêu: bài nộp collection *Trustworthy and Efficient Time-Series Intell
 
 | Phiên bản | Nội dung | Hướng dẫn (tiếng Việt) |
 |---|---|---|
-| **v0.3.5** (hiện tại) | Thay v0.3.4 theo P0 đầy đủ: kẻ tấn công 0,2 / 5 epoch, thêm kẻ tấn công kín đáo (boost 3) thay `constrain_scale` trong E3/E9, neurotoxin/adaptive có boost, sàng lọc 1 luồng, chia việc theo phần server/client của từng job (~26–35 giờ trên 5 máy); mã thí nghiệm mới 0.3.5 | [docs/README_v0.3.5.md](docs/README_v0.3.5.md) |
+| **v0.3.6** (hiện tại) | v0.3.5 + thí nghiệm tổng quát hoá trên lưu lượng SMS và cuộc gọi (X1, X2), `data prepare --activity`, `run_grids.sh --wait-idle` (chạy nối tiếp v0.3.5 trên từng máy), bảng `generalization.tex`; mã thí nghiệm giữ 0.3.5 (gộp được kết quả) | [docs/README_v0.3.6.md](docs/README_v0.3.6.md) |
+| v0.3.5 | Thay v0.3.4 theo P0 đầy đủ: kẻ tấn công 0,2 / 5 epoch, thêm kẻ tấn công kín đáo (boost 3) thay `constrain_scale` trong E3/E9, neurotoxin/adaptive có boost, sàng lọc 1 luồng, chia việc theo phần server/client của từng job (~26–35 giờ trên 5 máy); mã thí nghiệm mới 0.3.5 | [docs/README_v0.3.5.md](docs/README_v0.3.5.md) |
 | v0.3.4 (bỏ qua, không chạy) | Sau pilot P0 trên dữ liệu thật: 20 vòng, kẻ tấn công mạnh hơn mặc định, BurstGuard tìm kiếm rẻ hơn ~10 lần (batch), ngưỡng theo P0, client độc chạy trước, `attack.norm_mult`, lưới cắt gọn (~51 giờ trên 5 máy), ablation quy tắc tính lại từ điểm đã ghi; mã thí nghiệm mới 0.3.4 | [docs/README_v0.3.4.md](docs/README_v0.3.4.md) |
 | v0.3.3 | Chia việc theo sức máy (weighted shards, `~/burstguard-shared/cluster.weights`); `cluster.sh import 0.3.2` chuyển job đã xong; `burstguard plan` tính theo sức từng máy; mã thí nghiệm như v0.3.0 | [docs/README_v0.3.3.md](docs/README_v0.3.3.md) |
 | v0.3.2 | Không cần tmux: `cluster.sh` chạy nền bằng `nohup` (start/status/stop từ vm-e); `cluster.sh --bg collect` tự chờ các lưới xong ở cả 5 máy rồi gom kết quả, phân tích, báo cáo | [docs/README_v0.3.2.md](docs/README_v0.3.2.md) |
@@ -29,16 +30,16 @@ Phiên bản đang dùng: `cat VERSION` hoặc `burstguard --version`.
 ## Bắt đầu nhanh (mỗi phiên bản một thư mục riêng — không đè bản cũ)
 
 ```bash
-git clone -b release/v0.3.5 https://github.com/lamnguyentt92/burstguard.git ~/burstguard-v0.3.5
-cd ~/burstguard-v0.3.5
+git clone -b release/v0.3.6 https://github.com/lamnguyentt92/burstguard.git ~/burstguard-v0.3.6
+cd ~/burstguard-v0.3.6
 bash scripts/setup_venv.sh          # tạo .venv cô lập trong thư mục này (không cần sudo)
 source .venv/bin/activate
 burstguard doctor && burstguard smoke
-bash scripts/collect_logs.sh        # gom log (thành công hay thất bại) -> reports/bg_report_v0.3.5_*.txt
+bash scripts/collect_logs.sh        # gom log (thành công hay thất bại) -> reports/bg_report_v0.3.6_*.txt
 ```
 
 Dữ liệu lớn (Milan, trọng số mô hình) nằm ở `~/burstguard-shared` và dùng chung cho mọi phiên bản.
-Chi tiết từng bước, lưới thí nghiệm, phân tích kết quả và cách gửi log: **[docs/README_v0.3.5.md](docs/README_v0.3.5.md)**.
+Chi tiết từng bước, lưới thí nghiệm, phân tích kết quả và cách gửi log: **[docs/README_v0.3.6.md](docs/README_v0.3.6.md)**.
 
 ## Cấu trúc mã
 

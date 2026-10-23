@@ -8,7 +8,8 @@
 #        root@10.0.0.13          (or ssh aliases from ~/.ssh/config, e.g. vm2)
 # 2) bash scripts/cluster.sh keys        # ssh key + ssh-copy-id to every VM (type each VM's password once)
 #    bash scripts/cluster.sh check       # ssh, git, python3, rsync, CPU/RAM/disk on every VM
-#    bash scripts/cluster.sh push-data   # copy milan_d1.npz + Hugging Face model cache to every VM
+#    bash scripts/cluster.sh push-data   # copy the processed datasets (milan_d1.npz, milan_sms_d1.npz, ...) + Hugging
+#                                        # Face model cache to every VM
 #    bash scripts/cluster.sh install     # clone release/v<VERSION> + setup_venv.sh on every VM (in parallel)
 #    bash scripts/cluster.sh smoke       # burstguard smoke on every VM (in parallel)
 #    bash scripts/cluster.sh start "--tier pilot,calibration" "E1_clean"
@@ -21,6 +22,9 @@
 #                                        # collect_logs --campaign. Follow it: tail -f logs/cluster_collect_*.log
 #    bash scripts/cluster.sh stop        # stop the background run everywhere (start again = resume)
 #    bash scripts/cluster.sh import 0.3.2  # copy jobs finished under v0.3.2 into this version (they are skipped)
+#    bash scripts/cluster.sh start "--wait-idle --tier generalization"
+#                                        # each machine waits until the background run of an older checkout on that
+#                                        # machine has finished, then starts (no two versions share the CPUs)
 # Weighted shards (default): machines get work in proportion to their capacity (parallel workers), computed once
 # and stored in ~/burstguard-shared/cluster.weights ("w1,...,wN": this machine, then the hosts-file order).
 # Never edit it during a campaign (it fixes which machine runs which job); delete it to recompute.
@@ -168,20 +172,28 @@ check)
   exit $rc ;;
 # -----------------------------------------------------------------------------------------------------------
 push-data)
-  NPZ="$SHARED/data/processed/milan_d1.npz"; HF="$SHARED/hf"
-  [ -f "$NPZ" ] || { say "missing $NPZ - run burstguard data download && burstguard data prepare here first"; exit 2; }
+  shopt -s nullglob
+  NPZS=("$SHARED"/data/processed/milan*_d*.npz); HF="$SHARED/hf"
+  shopt -u nullglob
+  [ ${#NPZS[@]} -gt 0 ] || { say "missing $SHARED/data/processed/milan_d1.npz - run burstguard data download && burstguard data prepare here first"; exit 2; }
   [ -d "$HF/hub" ] || say "WARNING: no model cache in $HF (run burstguard model-download here first)"
   rc=0
   for h in "${HOSTS[@]}"; do
-    say "$h: copying milan_d1.npz and the model cache"
+    say "$h: copying $(for f in "${NPZS[@]}"; do printf '%s ' "$(basename "$f")"; done)and the model cache"
     rsh "$h" 'mkdir -p ~/burstguard-shared/data/processed ~/burstguard-shared/hf' || { say "$h: unreachable"; rc=1; continue; }
-    scp -q "${SSH_OPTS[@]}" "$NPZ" "$h:burstguard-shared/data/processed/" || rc=1
     if command -v rsync >/dev/null && rsh "$h" 'command -v rsync >/dev/null'; then
+      # --checksum: unchanged files are not rewritten; changed ones are replaced atomically (temp file + rename),
+      # so jobs that are running on that machine never read a half-copied dataset
+      rsync -a --checksum -e "ssh ${SSH_OPTS[*]}" "${NPZS[@]}" "$h:burstguard-shared/data/processed/" || rc=1
       rsync -a -e "ssh ${SSH_OPTS[*]}" "$HF/" "$h:burstguard-shared/hf/" || rc=1
     else
+      for f in "${NPZS[@]}"; do   # no rsync: copy only files the machine does not have yet
+        rsh "$h" "test -f ~/burstguard-shared/data/processed/$(basename "$f")" && continue
+        scp -q "${SSH_OPTS[@]}" "$f" "$h:burstguard-shared/data/processed/" || rc=1
+      done
       scp -q -r "${SSH_OPTS[@]}" "$HF/." "$h:burstguard-shared/hf/" || rc=1
     fi
-    rsh "$h" 'ls -l ~/burstguard-shared/data/processed/milan_d1.npz | awk "{print \"    \" \$5 \" bytes \" \$9}"'
+    rsh "$h" 'ls -l ~/burstguard-shared/data/processed/milan*.npz | awk "{print \"    \" \$5 \" bytes \" \$9}"'
   done
   exit $rc ;;
 # -----------------------------------------------------------------------------------------------------------
