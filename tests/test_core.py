@@ -292,6 +292,9 @@ def test_generalization_grids():
     paths = {j["overrides"]["data.path"] for j in x1 + x2}
     assert paths == {"shared:data/processed/milan_sms_d1.npz", "shared:data/processed/milan_call_d1.npz"}
     assert not any(j["overrides"].get("train.peft") == "lora" and j["overrides"]["run.seed"] == 1 for j in x2)
+    x3 = expand(load_grid(ROOT / "experiments" / "X3_trigger_offset.toml"))
+    assert len(x3) == 34 and {j["overrides"]["burstguard.width_max"] for j in x3} == {6, 18}
+    assert not any(j["overrides"]["attack.type"] == "none" and j["overrides"]["trigger.offset"] == 12 for j in x3)
 
 
 def test_plan_cost_model():

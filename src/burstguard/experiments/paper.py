@@ -410,6 +410,44 @@ def table_generalization(root: Path, tdir: Path, numbers: dict) -> str | None:
     return "tables/generalization.tex"
 
 
+def table_offset(root: Path, tdir: Path, numbers: dict) -> str | None:
+    """X3: trigger 12 slots before the end of the context vs. BurstGuard's search window (width_max 6 / 18)."""
+    t = _load(root, "X3_trigger_offset")
+    if not t:
+        return None
+    rows, _ = t
+    body = []
+    numbers["offset"] = {}
+    for peft in ("head", "lora"):
+        for w in (6, 18):
+            clean = pick_att(rows, "none", train__peft=peft, burstguard__width_max=w)
+            cells = [PEFT_TEX[peft], f"W={w}", fmt((clean or {}).get("fpr_units"), 2), fmt((clean or {}).get("mase_daily"))]
+            any_att = False
+            for att in ("scale", "scale@3"):
+                for off in (0, 12):
+                    r = pick_att(rows, att, train__peft=peft, burstguard__width_max=w, trigger__offset=off)
+                    any_att = any_att or bool(r)
+                    cells += [fmt((r or {}).get("tpr_units"), 2), fmt((r or {}).get("upr_trig"), 2)]
+                    numbers["offset"][f"{peft}/W{w}/{att}/offset{off}"] = {
+                        "tpr_units": _num((r or {}).get("tpr_units")), "upr_trig": _num((r or {}).get("upr_trig")),
+                        "mase": _num((r or {}).get("mase_daily"))}
+            numbers["offset"][f"{peft}/W{w}/none"] = {"fpr_units": _num((clean or {}).get("fpr_units")),
+                                                      "mase": _num((clean or {}).get("mase_daily"))}
+            if clean or any_att:
+                body.append(cells)
+    if not body:
+        return None
+    cap = ("Triggers outside the screened window (X3): burst ending 0 or 12 slots before the end of the context; "
+           "BurstGuard searching the last W = 6 (default) or 18 slots. False-positive rate and MASE without attack; "
+           "detection rate of attacked rounds (TPR) and residual UPR$_{trig}$ under model replacement ($\\gamma$=10) "
+           "and the covert attacker ($\\gamma$=3).")
+    groups = [(4, ""), (2, "$\\gamma$=10, offset 0"), (2, "$\\gamma$=10, offset 12"), (2, "$\\gamma$=3, offset 0"),
+              (2, "$\\gamma$=3, offset 12")]
+    hdr = ["Tuned", "Window", "FPR", "MASE"] + ["TPR", "UPR"] * 4
+    (tdir / "offset.tex").write_text(_tabular("llrr" + "rr" * 4, hdr, body, cap, "tab:offset", groups))
+    return "tables/offset.tex"
+
+
 def table_system(root: Path, tdir: Path, numbers: dict) -> str | None:
     t = _load(root, "E8_system")
     if not t:
@@ -687,6 +725,7 @@ def export(root: Path, out: Path | None = None, dataset: Path | None = None, log
                      ("defenses (E3)", lambda: table_defenses(root, tdir, numbers)),
                      ("ablation (E9)", lambda: table_ablation(root, tdir, numbers)),
                      ("generalization (X1/X2)", lambda: table_generalization(root, tdir, numbers)),
+                     ("trigger offset (X3)", lambda: table_offset(root, tdir, numbers)),
                      ("system (E8)", lambda: table_system(root, tdir, numbers))]:
         try:
             p = fn()

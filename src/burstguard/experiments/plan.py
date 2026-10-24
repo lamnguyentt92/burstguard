@@ -46,6 +46,7 @@ TIERS = {
     "2": ["E4_sensitivity", "E5_lifespan", "E6_adaptive"],
     "system": ["E8_system"],
     "generalization": ["X1_traffic_clean", "X2_traffic_defenses"],
+    "offset": ["X3_trigger_offset"],
 }
 
 

@@ -3,6 +3,19 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.7] — 2026-10-24
+
+Adds one grid after the complete main campaign (v0.3.5: 422 jobs, 0 failed); experiment code unchanged
+(`EXPERIMENT_CODE` stays "0.3.5": results of 0.3.5, 0.3.6 and 0.3.7 merge via `cluster.sh import`).
+
+### Added
+- `X3_trigger_offset` (34 jobs, tier `offset`): E6 showed that a trigger ending 12 slots before the end of the context
+  (outside the screened last width_max = 6 slots) partly evades BurstGuard (TPR 0.73, malicious kept 0.27, UPR 0.22 vs.
+  0.64 with FedAvg). X3 crosses trigger offset {0, 12} x search window width_max {6, 18} x {none, boost 10, boost 3}
+  (head, 3 seeds) plus LoRA clean / covert offset 12 (seed 0): detection, residual backdoor, false positives and clean
+  accuracy of the wider window.
+- Paper: `tables/offset.tex`.
+
 ## [0.3.6] — 2026-10-23
 
 Generalisation experiment; experiment code unchanged (`EXPERIMENT_CODE` stays "0.3.5", so 0.3.5 results are imported

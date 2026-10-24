@@ -352,7 +352,7 @@ def cmd_paper(a, ctx):
 def cmd_plan(a, ctx):
     from pathlib import Path as _P
     from burstguard.experiments import plan as PL
-    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system", "generalization"])
+    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system", "generalization", "offset"])
                         for n in PL.TIERS.get(t, [])]
     files = [resolve(n) if n.endswith(".toml") else ROOT / "experiments" / f"{n}.toml" for n in names]
     files = [f for f in files if _P(f).exists()]
@@ -575,7 +575,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_paper)
     s = sub.add_parser("plan", help="estimate remaining campaign time from finished jobs")
     s.add_argument("grids", nargs="*", help="grid names or files (default: all tiers)")
-    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system,generalization")
+    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system,generalization,offset")
     s.add_argument("--shards", type=int, default=5)
     s.add_argument("--weights", default="", help="w1,...,wN shard weights (default: $BURSTGUARD_SHARED/cluster.weights "
                                                   "if it exists, else equal shards)")

@@ -1,6 +1,6 @@
 """BurstGuard: robustness of federated fine-tuning of tiny time-series foundation models."""
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"
 VERSION_TAG = f"v{__version__}"
 DATA_FORMAT = 1  # bump when the processed .npz layout changes (file names carry this number)
 # Version of the experiment code (models, attacks, defenses, metrics, grids). Releases that only change tooling keep

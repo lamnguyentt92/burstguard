@@ -12,6 +12,7 @@
 #   bash scripts/run_grids.sh 1/1 --quick E3_defenses   # pipeline check
 #   bash scripts/run_grids.sh 2/5@4,1,3,1,3 --tier 1    # weighted shard (scripts/cluster.sh does this for you)
 #   bash scripts/run_grids.sh 2/5 --tier generalization # X1, X2: SMS and call traffic (data prepare --activity sms,call)
+#   bash scripts/run_grids.sh 2/5 --tier offset         # X3: triggers outside the screened window, wider window
 #   bash scripts/run_grids.sh 2/5 --wait-idle --tier generalization
 #                                    # first wait until background runs of OTHER checkouts on this machine have
 #                                    # finished (their logs/cluster_*.pid processes), so two versions never share CPUs
@@ -43,6 +44,7 @@ tier_grids() {
     2) echo "E4_sensitivity E5_lifespan E6_adaptive" ;;
     system) echo "E8_system" ;;
     generalization) echo "X1_traffic_clean X2_traffic_defenses" ;;
+    offset) echo "X3_trigger_offset" ;;
     *) echo "" ;;
   esac
 }
