@@ -80,7 +80,7 @@ tự thêm các hàng mới (`W=18 cal.` từ X6; BurstGuard SMS/cuộc gọi t�
 deactivate 2>/dev/null
 git clone -b release/v0.3.9 https://github.com/lamnguyentt92/burstguard.git ~/burstguard-v0.3.9
 cd ~/burstguard-v0.3.9 && bash scripts/setup_venv.sh && source .venv/bin/activate
-python -m pytest -q                   # tất cả passed (33 test)
+python -m pytest                      # dòng cuối: "33 passed in ..." (không có F hay E)
 burstguard smoke                      # 8 dòng [PASS], RUN OK
 ```
 
