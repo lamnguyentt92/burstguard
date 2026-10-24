@@ -1,5 +1,7 @@
 # BurstGuard v0.3.8 — Sửa BurstGuard cho lưu lượng SMS và cuộc gọi (X4, X5)
 
+> ⚠️ **Không chạy phiên bản này — dùng [v0.3.9](README_v0.3.9.md)** (sửa 3 lỗi của X4/X5 trước khi chạy).
+
 > **v0.3.8 = v0.3.7 + "sàn" cho điểm thay đổi tương đối (`burstguard.rel_floor`) + hiệu chỉnh ngưỡng theo từng loại
 > lưu lượng (`calibrate --write-thresholds`, `burstguard.threshold_file`) + lệnh kiểm tra `burstguard bg-check` +
 > 2 lưới X4 (monitor, hiệu chỉnh) và X5 (enforce với ngưỡng đã hiệu chỉnh).**

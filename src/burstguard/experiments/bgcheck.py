@@ -68,6 +68,8 @@ def check(results: str | None = None, base: str = "configs/base.toml", rho: floa
                 cfgj = load_config(str(f.parent / "config.toml"))
             except Exception:
                 continue
+            if str(cfgj["data"]["path"]) != TRAFFIC["internet"]:   # the identity check is about internet traffic
+                continue
             key = (f.parent.parent.name, cfgj["train"]["peft"], cfgj["attack"]["type"])
             if seen.get(key, 0) >= 1:
                 continue

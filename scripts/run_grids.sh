@@ -13,6 +13,9 @@
 #   bash scripts/run_grids.sh 2/5@4,1,3,1,3 --tier 1    # weighted shard (scripts/cluster.sh does this for you)
 #   bash scripts/run_grids.sh 2/5 --tier generalization # X1, X2: SMS and call traffic (data prepare --activity sms,call)
 #   bash scripts/run_grids.sh 2/5 --tier offset         # X3: triggers outside the screened window, wider window
+#   bash scripts/run_grids.sh 2/5 --tier traffic_bg,offset2,traffic_bg2
+#                                    # X4 (SMS/call calibration), X6 (calibrated wide window), X5 (SMS/call enforce;
+#                                    # waits for shared:bg_thresholds.toml, written by cluster.sh finish)
 #   bash scripts/run_grids.sh 2/5 --wait-idle --tier generalization
 #                                    # first wait until background runs of OTHER checkouts on this machine have
 #                                    # finished (their logs/cluster_*.pid processes), so two versions never share CPUs
@@ -47,6 +50,7 @@ tier_grids() {
     offset) echo "X3_trigger_offset" ;;
     traffic_bg) echo "X4_traffic_bg_monitor" ;;
     traffic_bg2) echo "X5_traffic_bg_enforce" ;;
+    offset2) echo "X6_offset_calibrated" ;;
     *) echo "" ;;
   esac
 }

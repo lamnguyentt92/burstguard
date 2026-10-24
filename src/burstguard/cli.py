@@ -290,7 +290,7 @@ def cmd_grid(a, ctx):
     if a.gcmd == "run":
         res = G.run_grid(a.file, a.shard, quick=a.quick, retry_failed=not a.no_retry, max_jobs=a.max_jobs,
                          extra=G.parse_kv(a.extra), tag=a.tag,
-                         seeds=[int(x) for x in a.seeds.split(",")] if a.seeds else None)
+                         seeds=[int(x) for x in a.seeds.split(",")] if a.seeds else None, wait=not a.no_wait)
         ctx.set(**res)
         if res["ran_failed"]:
             raise SystemExit(f"{res['ran_failed']} job(s) failed - see results/<...>/<job>/job.log and result.json")
@@ -352,7 +352,8 @@ def cmd_paper(a, ctx):
 def cmd_plan(a, ctx):
     from pathlib import Path as _P
     from burstguard.experiments import plan as PL
-    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system", "generalization", "offset", "traffic_bg", "traffic_bg2"])
+    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system", "generalization",
+                                                                     "offset", "traffic_bg", "offset2", "traffic_bg2"])
                         for n in PL.TIERS.get(t, [])]
     files = [resolve(n) if n.endswith(".toml") else ROOT / "experiments" / f"{n}.toml" for n in names]
     files = [f for f in files if _P(f).exists()]
@@ -378,11 +379,26 @@ def cmd_calibrate(a, ctx):
     for it in (a.where or []):
         k, _, v = it.partition("=")
         where[k.strip()] = v.strip().strip("\"'")
+    def job_value(jdir, ov, key):
+        """--where value of a job: its override, else the value in its config.toml (e.g. data.path of a grid that
+        does not vary it)."""
+        if key in ov:
+            return ov[key]
+        cfgp = jdir / "config.toml"
+        if not cfgp.exists():
+            return None
+        node = tomllib.loads(cfgp.read_text())
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        return node
+
     for m in sorted(gdir.glob("*/metrics.jsonl")):
-        if where:   # only jobs whose overrides match every --where KEY=VALUE
+        if where:   # only jobs whose overrides (or config values) match every --where KEY=VALUE
             rj = m.parent / "result.json"
             ov = json.loads(rj.read_text()).get("overrides", {}) if rj.exists() else {}
-            if any(str(ov.get(k)) != v for k, v in where.items()):
+            if any(str(job_value(m.parent, ov, k)) != v for k, v in where.items()):
                 continue
         series = []
         for line in m.read_text().splitlines():
@@ -436,14 +452,18 @@ def cmd_calibrate(a, ctx):
         key = where.get("data.path")
         if not key:
             raise ValueError("--write-thresholds needs --where data.path=... (thresholds are stored per dataset)")
-        best = rep.get(f"suggested, adaptive anchor ({mg}x clean max)")
+        # default: FIXED anchor threshold (margin x largest clean anchor score of the whole run). The adaptive
+        # anchor rule follows any smooth ramp, including a slow covert attacker (X3: head, boost 3, offset 12), and
+        # a floor taken from the first rounds gives false positives once benign LoRA drift grows (replay on X3, W=6)
+        rule = "fixed" if a.anchor == "fixed" else "adaptive"
+        best = rep.get(f"suggested, {rule} anchor ({mg}x clean max)")
         if not best:
             raise RuntimeError("no suggested thresholds (no clean rounds?)")
         import tomllib
         tf = resolve(a.write_thresholds)
         tab = tomllib.loads(tf.read_text()).get("thresholds", {}) if tf.exists() else {}
         tab[key] = {"threshold": best["threshold"], "threshold_anchor": best["threshold_anchor"],
-                    "anchor_adaptive": True, "replayed_fpr_units": best["replayed_fpr_units"],
+                    "anchor_adaptive": best["anchor_adaptive"], "replayed_fpr_units": best["replayed_fpr_units"],
                     "margin": mg, "clean_jobs": len(jobs), "calibrated_from": gdir.name,
                     "written": __import__("datetime").datetime.now().isoformat(timespec="seconds")}
         lines = ["# BurstGuard thresholds calibrated on clean monitor-mode rounds, one entry per dataset",
@@ -457,7 +477,8 @@ def cmd_calibrate(a, ctx):
         tf.write_text("\n".join(lines))
         res["written"] = {"file": str(tf), "data.path": key, **tab[key]}
         print(f"thresholds for {key}: threshold={best['threshold']} threshold_anchor={best['threshold_anchor']} "
-              f"(replayed FPR {best['replayed_fpr_units']}) -> {tf}")
+              f"anchor_adaptive={str(best['anchor_adaptive']).lower()} (replayed FPR {best['replayed_fpr_units']}) "
+              f"-> {tf}")
     print(json.dumps(res, indent=2))
     ctx.save_json("calibration.json", res)
     ctx.set(jobs=len(jobs), suggested_threshold=sug(max_last), suggested_threshold_anchor=sug(max_early))
@@ -597,6 +618,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--extra", action="append", default=[], help="TESTING ONLY: extra override KEY=VALUE for every job")
     s.add_argument("--tag", default="", help="TESTING ONLY: results go to results/<v>/<grid>_<tag>")
     s.add_argument("--seeds", default="", help="TESTING ONLY: comma list replacing the grid's seeds")
+    s.add_argument("--no-wait", action="store_true", help="do not wait for missing calibrated thresholds "
+                   "(burstguard.threshold_file); default: wait, log a line every 5 min")
     s.set_defaults(fn=cmd_grid, name="run")
     s = gp.add_parser("status", help="progress per shard"); s.add_argument("file")
     s.add_argument("--shards", type=int, default=1); s.add_argument("--quick", action="store_true")
@@ -618,7 +641,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_paper)
     s = sub.add_parser("plan", help="estimate remaining campaign time from finished jobs")
     s.add_argument("grids", nargs="*", help="grid names or files (default: all tiers)")
-    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system,generalization,offset,traffic_bg,traffic_bg2")
+    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system,"
+                   "generalization,offset,traffic_bg,offset2,traffic_bg2")
     s.add_argument("--shards", type=int, default=5)
     s.add_argument("--weights", default="", help="w1,...,wN shard weights (default: $BURSTGUARD_SHARED/cluster.weights "
                                                   "if it exists, else equal shards)")
@@ -630,6 +654,8 @@ def build_parser() -> argparse.ArgumentParser:
                    "--where data.path=shared:data/processed/milan_sms_d1.npz (repeatable)")
     s.add_argument("--write-thresholds", default="", help="store the suggested thresholds for --where data.path in "
                    "this TOML file (e.g. shared:bg_thresholds.toml; used by burstguard.threshold_file)")
+    s.add_argument("--anchor", choices=["fixed", "adaptive"], default="fixed",
+                   help="anchor rule written by --write-thresholds (default fixed: robust to slow ramps)")
     s.set_defaults(fn=cmd_calibrate)
 
     s = sub.add_parser("bg-check", help="diagnose BurstGuard's relative-change floor (traffic types, saved models)")

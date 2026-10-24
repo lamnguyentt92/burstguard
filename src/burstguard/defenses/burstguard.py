@@ -118,11 +118,20 @@ class BurstGuard:
         floor = float(self.bg["threshold_anchor"])
         return self._adaptive(floor, self.history_anchor) if self.bg.get("anchor_adaptive", True) else floor
 
-    def screen(self, theta_g: np.ndarray, unit_deltas: list[np.ndarray], rnd: int) -> tuple[list[bool], dict]:
-        """Return (flags per candidate unit, info). Candidates are theta_g + unit delta."""
+    def regroup_scale(self, groups: int | None = None) -> float:
+        """Threshold multiplier for the units of a regroup into `groups` groups
+        (burstguard.regroup_threshold_scale; "sqrt" = sqrt(groups))."""
+        rs = self.bg.get("regroup_threshold_scale", 1.0)
+        g = int(groups if groups is not None else self.bg["regroup_groups"])
+        return float(np.sqrt(g)) if rs == "sqrt" else float(rs)
+
+    def screen(self, theta_g: np.ndarray, unit_deltas: list[np.ndarray], rnd: int,
+               scale: float = 1.0) -> tuple[list[bool], dict]:
+        """Return (flags per candidate unit, info). Candidates are theta_g + unit delta. `scale` multiplies both
+        thresholds (regroup units: partial aggregates are noisier than the full aggregate)."""
         t0, w0 = time.process_time(), time.time()
         ref = self.bg["reference"]
-        thr, thr_a = self.threshold(), self.threshold_anchor()
+        thr, thr_a = self.threshold() * scale, self.threshold_anchor() * scale
         s_last, s_anchor, would = [], [], []
         prev_threads = torch.get_num_threads()
         torch.set_num_threads(self.threads)
@@ -137,10 +146,11 @@ class BurstGuard:
             torch.set_num_threads(prev_threads)
         flags = would if self.bg["mode"] == "enforce" else [False] * len(would)
         # one comparable score per unit for logging / ROC analysis: largest margin over its threshold
-        scores = [max([(x - t) for x, t in ((sl, thr), (sa, thr_a)) if x is not None]) + float(self.bg["threshold"])
+        base = float(self.bg["threshold"]) * scale
+        scores = [max([(x - t) for x, t in ((sl, thr), (sa, thr_a)) if x is not None]) + base
                   for sl, sa in zip(s_last, s_anchor)]
         return flags, {"scores": scores, "score_last": s_last, "score_anchor": s_anchor, "threshold": thr,
-                       "threshold_anchor": thr_a, "flags": flags, "would_flag": would,
+                       "threshold_anchor": thr_a, "threshold_scale": scale, "flags": flags, "would_flag": would,
                        "cpu_s": time.process_time() - t0, "wall_s": time.time() - w0, "threads": self.threads,
                        "mode": self.bg["mode"], "reference": ref}
 

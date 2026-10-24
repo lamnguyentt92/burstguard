@@ -20,6 +20,9 @@
 #                                        # in the background: wait until these grids are finished on all machines
 #                                        # (pull results every 10 min), then analyze all, calibrate, plan and
 #                                        # collect_logs --campaign. Follow it: tail -f logs/cluster_collect_*.log
+#    bash scripts/cluster.sh --bg finish # v0.3.9: once X4 is done everywhere calibrate SMS/call + push the thresholds
+#                                        # (X5 then starts by itself), wait for every grid, analyse, bg-check, paper,
+#                                        # campaign report. Follow it: tail -f logs/cluster_finish_*.log
 #    bash scripts/cluster.sh stop        # stop the background run everywhere (start again = resume)
 #    bash scripts/cluster.sh import 0.3.2  # copy jobs finished under v0.3.2 into this version (they are skipped)
 #    bash scripts/cluster.sh start "--wait-idle --tier generalization"
@@ -65,7 +68,7 @@ mkdir -p logs
 TS="$(date +%Y%m%d-%H%M%S)"
 say() { echo "[burstguard v$VER cluster $(date +%H:%M:%S)] $*"; }
 
-if [ -z "$CMD" ] || [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then sed -n '2,36p' "$0"; exit 0; fi
+if [ -z "$CMD" ] || [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then sed -n '2,39p' "$0"; exit 0; fi
 
 # --bg: re-run this very command detached from the terminal (survives logout), output in a log file
 if [ $BG = 1 ]; then
@@ -299,8 +302,52 @@ collect)
   "$BG_BIN" analyze all
   [ -d "results/v$VER/E0_calibration" ] && "$BG_BIN" calibrate experiments/E0_calibration.toml
   "$BG_BIN" plan
+  if [ "${WITH_PAPER:-0}" = 1 ]; then
+    say "bg-check (relative-change floor on saved internet models) -> logs/bg_check_v$VER.out"
+    "$BG_BIN" bg-check --results "results/v$VER" > "logs/bg_check_v$VER.out" 2>&1 || say "warning: bg-check failed (logs/bg_check_v$VER.out)"
+    say "paper tables and figures -> results/v$VER/_paper"
+    "$BG_BIN" paper > "logs/paper_v$VER.out" 2>&1 || say "warning: paper export failed (logs/paper_v$VER.out)"
+  fi
   bash scripts/collect_logs.sh --campaign
   say "DONE - send the two newest files in $ROOT/reports/ (.txt and .tar.gz)" ;;
+# -----------------------------------------------------------------------------------------------------------
+finish)
+  # End of the campaign in ONE background command (cluster.sh --bg finish):
+  #  1) once X4_traffic_bg_monitor is complete on all machines: calibrate SMS and call (fixed anchor rule), write
+  #     $SHARED/bg_thresholds.toml and copy it to every machine - X5 (waiting there) then starts by itself;
+  #  2) wait for every grid, analyse all, bg-check, paper tables / figures, campaign report.
+  GRIDS=("$@")
+  [ ${#GRIDS[@]} -ge 1 ] || GRIDS=(E0_calibration E1_clean E2_attacks E3_defenses E7_secagg E9_ablation E4_sensitivity
+    E5_lifespan E6_adaptive E8_system X1_traffic_clean X2_traffic_defenses X3_trigger_offset X4_traffic_bg_monitor
+    X5_traffic_bg_enforce X6_offset_calibrated)
+  BG_BIN="$ROOT/.venv/bin/burstguard"
+  [ -x "$BG_BIN" ] || { say "missing $BG_BIN - run bash scripts/setup_venv.sh"; exit 2; }
+  if printf '%s\n' "${GRIDS[@]}" | grep -qx X5_traffic_bg_enforce; then
+    X4=X4_traffic_bg_monitor
+    N4="$("$BG_BIN" grid list "experiments/$X4.toml" 2>/dev/null | grep -oE '^[0-9]+ jobs' | cut -d' ' -f1)"
+    say "step 1/2: waiting for $X4 on all machines (results pulled every ${WAIT_MIN:-5} min)"
+    while true; do
+      bash scripts/sync_results.sh > "logs/finish_sync.log" 2>&1 || say "warning: some machines could not be synced (logs/finish_sync.log)"
+      "$BG_BIN" grid status "experiments/$X4.toml" 2>/dev/null | grep -qE '"(pending|running)"' || break
+      say "$X4 not finished yet: $(grep -l '"status": "success"' results/v"$VER"/$X4/*/result.json 2>/dev/null | wc -l)/${N4:-?} jobs done"
+      sleep $(( ${WAIT_MIN:-5} * 60 ))
+    done
+    NF="$(grep -l '"status": "failed"' results/v"$VER"/$X4/*/result.json 2>/dev/null | wc -l)"
+    [ "$NF" -gt 0 ] && say "WARNING: $NF job(s) of $X4 failed - calibrating on the finished ones"
+    for ds in sms call; do
+      say "calibrating $ds: burstguard calibrate experiments/$X4.toml --where data.path=shared:data/processed/milan_${ds}_d1.npz --write-thresholds shared:bg_thresholds.toml"
+      "$BG_BIN" calibrate "experiments/$X4.toml" --where "data.path=shared:data/processed/milan_${ds}_d1.npz" \
+        --write-thresholds shared:bg_thresholds.toml > "logs/finish_calibrate_${ds}.log" 2>&1 \
+        || { say "ERROR: calibration of $ds failed - see logs/finish_calibrate_${ds}.log"; exit 1; }
+      grep -E '^thresholds for' "logs/finish_calibrate_${ds}.log" | sed 's/^/    /'
+    done
+    say "copying $SHARED/bg_thresholds.toml to every machine (push-data)"
+    bash "$0" --hosts "$HOSTS_FILE" push-data > "logs/finish_push.log" 2>&1 \
+      || say "WARNING: push-data had errors (logs/finish_push.log) - run: bash scripts/cluster.sh push-data"
+    say "thresholds in place - X5 starts on each machine at its next check (<= 5 min)"
+  fi
+  say "step 2/2: waiting for all grids, then analyse + bg-check + paper + campaign report"
+  WITH_PAPER=1 WAIT_MIN="${WAIT_MIN:-10}" exec bash "$0" --hosts "$HOSTS_FILE" collect "${GRIDS[@]}" ;;
 # -----------------------------------------------------------------------------------------------------------
 import)
   OLD="${1:-}"; [ -n "$OLD" ] || { say "usage: cluster.sh import OLD_VERSION   (e.g. 0.3.2)"; exit 2; }

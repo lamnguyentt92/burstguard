@@ -49,6 +49,7 @@ TIERS = {
     "offset": ["X3_trigger_offset"],
     "traffic_bg": ["X4_traffic_bg_monitor"],
     "traffic_bg2": ["X5_traffic_bg_enforce"],
+    "offset2": ["X6_offset_calibrated"],
 }
 
 

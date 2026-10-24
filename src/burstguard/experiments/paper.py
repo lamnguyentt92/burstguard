@@ -30,6 +30,8 @@ KIND_TEX = {"zeroshot": "Zero-shot", "local_only": "Local only", "centralized": 
 PEFTS = ["head", "decoder", "lora", "full"]
 ATTACKS = ["poison", "scale@3", "scale@5", "scale", "constrain_scale"]   # E2 (strength vs. stealth)
 ATTACKS_E3 = ["scale", "scale@3"]                                          # E3 / E9 (model replacement, covert)
+# defenses that need only the (securely) aggregated model (config.AGGREGATE_ONLY + server-side add-ons)
+SECAGG_OK = {"fedavg", "clip_noise", "probe_screen", "lora_reset", "burstguard"}
 
 
 def akey(r: dict | None) -> str | None:
@@ -270,25 +272,33 @@ def table_defenses(root: Path, tdir: Path, numbers: dict) -> str | None:
             if not clean and not pick(rows, defense__name=d, train__peft=peft):
                 continue
             fpr = clean.get("fpr_units") if clean else None
-            cells = [DEFENSE_TEX.get(d, d), fmt(clean.get("mase_daily") if clean else None),
+            # v0.3.9: SecAgg column (works on the securely aggregated model alone) and UPR_trig instead of the strict
+            # ASR, which stays near 0 for the covert attacker although it under-forecasts most triggered windows
+            cells = [DEFENSE_TEX.get(d, d), "yes" if d in SECAGG_OK else "no",
+                     fmt(clean.get("mase_daily") if clean else None),
                      fmt(fpr, 2) if d in ("burstguard", "probe_screen") else "--"]
             for att in ATTACKS_E3:
                 r = pick_att(rows, att, defense__name=d, train__peft=peft)
-                cells += [fmt((r or {}).get("asr"), 2), fmt((r or {}).get("mase_daily"))]
+                cells += [fmt((r or {}).get("upr_trig"), 2), fmt((r or {}).get("mase_daily"))]
                 numbers["defenses"][f"{peft}/{d}/{att}"] = {"asr": _num((r or {}).get("asr")),
+                                                            "upr_trig": _num((r or {}).get("upr_trig")),
                                                             "mase": _num((r or {}).get("mase_daily")),
                                                             "tpr_units": _num((r or {}).get("tpr_units"))}
             numbers["defenses"][f"{peft}/{d}/none"] = {"mase": _num((clean or {}).get("mase_daily")),
-                                                       "fpr_units": _num(fpr)}
+                                                       "fpr_units": _num(fpr),
+                                                       "upr_trig": _num((clean or {}).get("upr_trig"))}
             body.append(cells)
         if not body:
             continue
-        cap = (f"Defenses against burst-triggered backdoors ({PEFT_TEX[peft]} fine-tuning, 2/20 malicious sites): "
-               "clean MASE without attack, BurstGuard false-positive rate on clean rounds (FPR), and ASR / MASE "
-               "under each attack (means over 3 seeds$\\times$sites; CIs in the CSV of experiment E3).")
-        groups = [(3, "")] + [(2, ATTACK_TEX[a]) for a in ATTACKS_E3]
-        hdr = ["Defense", "Clean MASE", "FPR"] + ["ASR", "MASE"] * len(ATTACKS_E3)
-        (tdir / f"defenses_{peft}.tex").write_text(_tabular("lrr" + "rr" * len(ATTACKS_E3), hdr, body, cap,
+        cap = (f"Defenses against burst-triggered backdoors ({PEFT_TEX[peft]} fine-tuning, 2/20 malicious sites). "
+               "SecAgg: the defense needs only the (securely) aggregated model, not individual updates (Clip+DP with "
+               "client-side clipping). Clean MASE without attack, false-positive rate on clean rounds (FPR), and "
+               "UPR$_{trig}$ (share of triggered windows forecast below 80\\% of the truth; about 0.01 without "
+               "attack) / MASE under each attack (means over seeds$\\times$sites; CIs and the strict ASR in the CSV "
+               "of experiment E3).")
+        groups = [(4, "")] + [(2, ATTACK_TEX[a]) for a in ATTACKS_E3]
+        hdr = ["Defense", "SecAgg", "Clean MASE", "FPR"] + ["UPR", "MASE"] * len(ATTACKS_E3)
+        (tdir / f"defenses_{peft}.tex").write_text(_tabular("lcrr" + "rr" * len(ATTACKS_E3), hdr, body, cap,
                                                             f"tab:defenses-{peft}", groups))
         made = f"tables/defenses_{peft}.tex"
     return made and "tables/defenses_head.tex, tables/defenses_lora.tex"
@@ -406,7 +416,8 @@ def table_generalization(root: Path, tdir: Path, numbers: dict) -> str | None:
            "($\\gamma$=10) / the covert attacker ($\\gamma$=3) with FedAvg, the covert attacker's damage to clean MASE, "
            "UPR$_{trig}$ with the probe-loss check ($\\gamma$=3) and with BurstGuard ($\\gamma$=10 / $\\gamma$=3), "
            "BurstGuard's MASE under attack and its false-positive rate on clean rounds. For SMS and calls BurstGuard "
-           "uses the relative-change floor and thresholds calibrated on clean rounds of that traffic type (X4/X5).")
+           "uses the relative-change floor and thresholds calibrated on clean rounds of that traffic type (X4/X5, "
+           "fixed anchor rule; its false-positive rate is measured on seeds not used for calibration).")
     hdr = ["Traffic", "Tuned", "Zero-shot", "FL", "FedAvg UPR", "$\\Delta$MASE\\% ($\\gamma$=3)", "Probe UPR",
            "BurstGuard UPR", "BG MASE", "FPR"]
     (tdir / "generalization.tex").write_text(_tabular("llrrcrrcrr", hdr, body, cap, "tab:generalization"))
@@ -416,32 +427,41 @@ def table_generalization(root: Path, tdir: Path, numbers: dict) -> str | None:
 def table_offset(root: Path, tdir: Path, numbers: dict) -> str | None:
     """X3: trigger 12 slots before the end of the context vs. BurstGuard's search window (width_max 6 / 18)."""
     t = _load(root, "X3_trigger_offset")
-    if not t:
+    t6 = _load(root, "X6_offset_calibrated")   # v0.3.9: W = 18 with recalibrated thresholds
+    if not t and not t6:
         return None
-    rows, _ = t
+    rows = t[0] if t else []
+    rows6 = t6[0] if t6 else []
     body = []
     numbers["offset"] = {}
     for peft in ("head", "lora"):
-        for w in (6, 18):
-            clean = pick_att(rows, "none", train__peft=peft, burstguard__width_max=w)
-            cells = [PEFT_TEX[peft], f"W={w}", fmt((clean or {}).get("fpr_units"), 2), fmt((clean or {}).get("mase_daily"))]
+        for src, w, tag, kw in ((rows, 6, "W=6", {"burstguard__width_max": 6}),
+                                (rows, 18, "W=18", {"burstguard__width_max": 18}),
+                                (rows6, 18, "W=18 cal.", {})):
+            if not src:
+                continue
+            key = f"W{w}" + ("cal" if tag.endswith("cal.") else "")
+            clean = pick_att(src, "none", train__peft=peft, **kw)
+            cells = [PEFT_TEX[peft], tag, fmt((clean or {}).get("fpr_units"), 2), fmt((clean or {}).get("mase_daily"))]
             any_att = False
             for att in ("scale", "scale@3"):
                 for off in (0, 12):
-                    r = pick_att(rows, att, train__peft=peft, burstguard__width_max=w, trigger__offset=off)
+                    r = pick_att(src, att, train__peft=peft, trigger__offset=off, **kw)
                     any_att = any_att or bool(r)
                     cells += [fmt((r or {}).get("tpr_units"), 2), fmt((r or {}).get("upr_trig"), 2)]
-                    numbers["offset"][f"{peft}/W{w}/{att}/offset{off}"] = {
+                    numbers["offset"][f"{peft}/{key}/{att}/offset{off}"] = {
                         "tpr_units": _num((r or {}).get("tpr_units")), "upr_trig": _num((r or {}).get("upr_trig")),
                         "mase": _num((r or {}).get("mase_daily"))}
-            numbers["offset"][f"{peft}/W{w}/none"] = {"fpr_units": _num((clean or {}).get("fpr_units")),
-                                                      "mase": _num((clean or {}).get("mase_daily"))}
+            numbers["offset"][f"{peft}/{key}/none"] = {"fpr_units": _num((clean or {}).get("fpr_units")),
+                                                       "mase": _num((clean or {}).get("mase_daily"))}
             if clean or any_att:
                 body.append(cells)
     if not body:
         return None
-    cap = ("Triggers outside the screened window (X3): burst ending 0 or 12 slots before the end of the context; "
-           "BurstGuard searching the last W = 6 (default) or 18 slots. False-positive rate and MASE without attack; "
+    cap = ("Triggers outside the screened window (X3, X6): burst ending 0 or 12 slots before the end of the context; "
+           "BurstGuard searching the last W = 6 (default) or 18 slots with the default thresholds, and W = 18 with "
+           "thresholds recalibrated for the wider window (cal.: 1.5$\\times$ the largest clean score, fixed anchor "
+           "rule; clean runs on seeds not used for calibration). False-positive rate and MASE without attack; "
            "detection rate of attacked rounds (TPR) and residual UPR$_{trig}$ under model replacement ($\\gamma$=10) "
            "and the covert attacker ($\\gamma$=3).")
     groups = [(4, ""), (2, "$\\gamma$=10, offset 0"), (2, "$\\gamma$=10, offset 12"), (2, "$\\gamma$=3, offset 0"),
@@ -485,25 +505,42 @@ def fig_lifespan(root: Path, fdir: Path, made: list[str], numbers: dict) -> None
     rows, _ = t
     plt = _plt()
     pefts = [p for p in PEFTS if any(r.get("train.peft") == p for r in rows)]
-    fig, axes = plt.subplots(1, len(pefts), figsize=(1.9 * len(pefts) + 0.6, 2.0), sharey=True, squeeze=False)
+    # v0.3.9: second row = UPR_trig (share of triggered windows forecast below 80 % of the truth). The strict ASR of
+    # the covert backdoor is close to 0 on held-out data, the under-forecast it causes is not.
+    metrics = (("asr_mean", "ASR (val)"), ("upr_trig_mean", "UPR$_{trig}$ (val)"))
+    fig, axes = plt.subplots(len(metrics), len(pefts), figsize=(1.9 * len(pefts) + 0.6, 1.8 * len(metrics) + 0.3),
+                             sharey="row", sharex=True, squeeze=False)
     numbers["lifespan"] = {}
-    for ax, peft in zip(axes[0], pefts):
-        for r in sorted([r for r in rows if r.get("train.peft") == peft],
-                        key=lambda r: DEFENSE_ORDER.index(r.get("defense.name")) if r.get("defense.name") in DEFENSE_ORDER else 99):
-            series = [AN._val_asr_series(j["dir"]) for j in r["_jobs"]]
-            series = [s for s in series if s[0]]
-            if not series:
-                continue
-            xs = series[0][0]
-            ys = np.nanmean([s[1] for s in series if len(s[1]) == len(xs)], axis=0)
-            ax.plot(xs, ys, linewidth=1, label=DEFENSE_TEX.get(r.get("defense.name"), "").replace("\\textbf{", "").replace("}", ""))
-            numbers["lifespan"][f"{peft}/{r.get('defense.name')}"] = {"l50": _num(r.get("lifespan_l50")),
-                                                                      "censored": r.get("lifespan_censored")}
-        ov = rows[0]["_jobs"][0]["res"]["overrides"]
-        ax.axvspan(int(ov.get("attack.start_round", 10)), int(ov.get("attack.end_round", 20)), color="red", alpha=0.08)
-        ax.set_title(PEFT_TEX[peft]); ax.set_xlabel("round"); ax.set_ylim(0, 1)
-    axes[0][0].set_ylabel("ASR (val)")
-    axes[0][-1].legend(loc="upper right")
+    ov = rows[0]["_jobs"][0]["res"]["overrides"]
+    for col, peft in enumerate(pefts):
+        prs = sorted([r for r in rows if r.get("train.peft") == peft],
+                     key=lambda r: DEFENSE_ORDER.index(r.get("defense.name")) if r.get("defense.name") in DEFENSE_ORDER else 99)
+        for row, (metric, ylabel) in enumerate(metrics):
+            ax = axes[row][col]
+            for r in prs:
+                series = [AN._val_series(j["dir"], metric) for j in r["_jobs"]]
+                series = [s for s in series if s[0]]
+                if not series:
+                    continue
+                xs = series[0][0]
+                ys = np.nanmean([s[1] for s in series if len(s[1]) == len(xs)], axis=0)
+                ax.plot(xs, ys, linewidth=1, label=DEFENSE_TEX.get(r.get("defense.name"), "").replace("\\textbf{", "").replace("}", ""))
+                if metric == "upr_trig_mean":
+                    numbers["lifespan"].setdefault(f"{peft}/{r.get('defense.name')}", {})["upr_val_series"] = {
+                        "round": [int(x) for x in xs], "upr": [round(float(y), 4) for y in ys]}
+            ax.axvspan(int(ov.get("attack.start_round", 10)), int(ov.get("attack.end_round", 20)), color="red", alpha=0.08)
+            ax.set_ylim(0, 1)
+            if row == 0:
+                ax.set_title(PEFT_TEX[peft])
+            if row == len(metrics) - 1:
+                ax.set_xlabel("round")
+            if col == 0:
+                ax.set_ylabel(ylabel)
+        for r in prs:
+            numbers["lifespan"].setdefault(f"{peft}/{r.get('defense.name')}", {}).update(
+                {"l50": _num(r.get("lifespan_l50")), "censored": r.get("lifespan_censored"),
+                 "upr_l50": _num(r.get("lifespan_upr_l50")), "upr_censored": r.get("lifespan_upr_censored")})
+    axes[0][-1].legend(loc="upper right", fontsize=6)
     fig.tight_layout()
     _save(fig, fdir, "lifespan", made)
     plt.close(fig)

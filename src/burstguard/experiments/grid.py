@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import os
 import time
 import tomllib
 import traceback
@@ -293,9 +294,64 @@ def _run_baseline(kind: str, cfg: dict[str, Any], log) -> dict[str, Any]:
     return {"final": final, "per_site": per_site}
 
 
+def missing_inputs(g: dict[str, Any], jobs: list[dict[str, Any]]) -> list[str]:
+    """Calibrated-threshold entries (burstguard.threshold_file, one per data.path) that `jobs` need and that are not
+    available on this machine yet, as readable strings."""
+    need: dict[str, set[str]] = {}
+    base_path = None
+    for j in jobs:
+        ov = j["overrides"]
+        tf = ov.get("burstguard.threshold_file")
+        if not tf:
+            continue
+        key = ov.get("data.path")
+        if key is None:
+            if base_path is None:
+                base_path = str(load_config(g["grid"].get("base_config"))["data"]["path"])
+            key = base_path
+        need.setdefault(str(tf), set()).add(str(key))
+    out = []
+    for tf, keys in need.items():
+        p = resolve(tf)
+        have: dict[str, Any] = {}
+        if p.exists():
+            try:
+                have = tomllib.loads(p.read_text()).get("thresholds", {})
+            except Exception:  # half-written file: try again at the next check
+                have = {}
+        out += [f"data.path={k} in {p}" for k in sorted(keys) if k not in have]
+    return out
+
+
+def wait_inputs(g: dict[str, Any], jobs: list[dict[str, Any]], log=print, timeout_h: float | None = None,
+                poll_s: float | None = None) -> bool:
+    """Block until the calibrated thresholds the jobs need exist (X5 waits for X4 -> calibrate -> push-data).
+    Returns False after `timeout_h` (default $BURSTGUARD_WAIT_INPUTS_H or 48 h); the jobs then fail with a clear
+    message."""
+    timeout_h = float(os.environ.get("BURSTGUARD_WAIT_INPUTS_H", 48)) if timeout_h is None else timeout_h
+    poll_s = float(os.environ.get("BURSTGUARD_WAIT_POLL_S", 300)) if poll_s is None else poll_s
+    t0 = time.time()
+    while True:
+        miss = missing_inputs(g, jobs)
+        if not miss:
+            return True
+        if time.time() - t0 > timeout_h * 3600:
+            log(f"[burstguard {VERSION_TAG}] gave up waiting for calibrated thresholds after {timeout_h:g} h: "
+                f"{'; '.join(miss)}")
+            return False
+        msg = (f"[burstguard {VERSION_TAG}] {time.strftime('%Y-%m-%dT%H:%M:%S')} {g['grid']['name']} waits for "
+               f"calibrated thresholds: {'; '.join(miss)} (`bash scripts/cluster.sh finish` writes them on the main "
+               f"machine once X4 is complete and copies them to every machine) - next check in {poll_s / 60:g} min")
+        if log is print:
+            print(msg, flush=True)
+        else:
+            log(msg)
+        time.sleep(poll_s)
+
+
 def run_grid(path: str, shard_spec: str = "1/1", quick: bool = False, retry_failed: bool = True,
              max_jobs: int = 0, extra: dict[str, Any] | None = None, tag: str = "", seeds: list[int] | None = None,
-             log=print) -> dict[str, Any]:
+             log=print, wait: bool = True) -> dict[str, Any]:
     g = load_grid(path)
     if seeds:
         g["grid"]["seeds"] = list(seeds)
@@ -309,6 +365,9 @@ def run_grid(path: str, shard_spec: str = "1/1", quick: bool = False, retry_fail
     wtxt = f" (weights {','.join(f'{x:g}' for x in weights)})" if weights else ""
     log(f"grid {g['grid']['name']}{' (quick)' if quick else ''}: {len(jobs)} jobs total, shard {k}/{n}{wtxt} -> "
         f"{len(mine)} jobs, results in {gdir}")
+    todo = [j for j in mine if job_status(gdir / j["id"]) != "success"]
+    if wait and todo:
+        wait_inputs(g, todo, log=log)
     done = failed = skipped = 0
     for i, job in enumerate(mine, 1):
         jdir = gdir / job["id"]

@@ -46,30 +46,42 @@ def _final_per_site(jdir: Path, split: str) -> tuple[dict[str, list[float]], dic
     return per, res
 
 
-def _val_asr_series(jdir: Path) -> tuple[list[int], list[float]]:
+def _val_series(jdir: Path, metric: str = "asr_mean") -> tuple[list[int], list[float]]:
+    """(rounds, values) of one metric of the validation evaluations of a job (metrics.jsonl)."""
     xs, ys = [], []
     p = jdir / "metrics.jsonl"
     if not p.exists():
         return xs, ys
     for line in p.read_text().splitlines():
         r = json.loads(line)
-        if r.get("kind") == "eval" and r.get("split") == "val" and r.get("asr_mean") is not None:
-            xs.append(int(r["round"])); ys.append(float(r["asr_mean"]))
+        if r.get("kind") == "eval" and r.get("split") == "val" and r.get(metric) is not None:
+            xs.append(int(r["round"])); ys.append(float(r[metric]))
     return xs, ys
 
 
-def lifespan(xs: list[int], ys: list[float], start: int, end: int, rounds: int) -> tuple[float | None, bool]:
-    """L50 in rounds after the attack stops; (value, censored)."""
+def _val_asr_series(jdir: Path) -> tuple[list[int], list[float]]:
+    return _val_series(jdir, "asr_mean")
+
+
+def lifespan(xs: list[int], ys: list[float], start: int, end: int, rounds: int,
+             relative: bool = False, min_effect: float = 0.05) -> tuple[float | None, bool]:
+    """L50 in rounds after the attack stops; (value, censored).
+    relative=True (UPR_trig, > 0 without any attack): measured on the excess over the pre-attack level, and 0 when
+    the in-window excess stays below `min_effect` (no backdoor to outlive)."""
     if end <= 0 or not xs:
         return None, False
     inwin = [y for x, y in zip(xs, ys) if start <= x <= end]
     if not inwin:
         return None, False
-    peak = max(inwin)
-    if peak <= 0:
+    base = 0.0
+    if relative:
+        pre = [y for x, y in zip(xs, ys) if x < start]
+        base = float(np.mean(pre)) if pre else float(ys[0])
+    peak = max(inwin) - base
+    if peak <= (min_effect if relative else 0.0):
         return 0.0, False
     for x, y in zip(xs, ys):
-        if x > end and y <= 0.5 * peak:
+        if x > end and y - base <= 0.5 * peak:
             return float(x - end), False
     return float(rounds - end), True
 
@@ -148,17 +160,18 @@ def build_rows(gdir: Path, split: str = "test", log=print) -> tuple[list[dict], 
                 mu, lo, hi = bootstrap_ci(mat)
                 row[m], row[f"{m}_lo"], row[f"{m}_hi"] = mu, lo, hi
         ov = js[0]["res"]["overrides"]
-        ls = []
-        for j in js:
-            xs, ys = _val_asr_series(j["dir"])
-            eff = j["res"].get("effective") or {}
-            v, cens = lifespan(xs, ys, int(ov.get("attack.start_round", 1)), int(ov.get("attack.end_round", 0)),
-                               int(ov.get("fl.rounds", eff.get("fl.rounds", 20))))
-            if v is not None:
-                ls.append((v, cens))
-        if ls:
-            row["lifespan_l50"] = float(np.median([v for v, _ in ls]))
-            row["lifespan_censored"] = sum(c for _, c in ls)
+        for metric, col in (("asr_mean", "lifespan_l50"), ("upr_trig_mean", "lifespan_upr_l50")):
+            ls = []
+            for j in js:
+                xs, ys = _val_series(j["dir"], metric)
+                eff = j["res"].get("effective") or {}
+                v, cens = lifespan(xs, ys, int(ov.get("attack.start_round", 1)), int(ov.get("attack.end_round", 0)),
+                                   int(ov.get("fl.rounds", eff.get("fl.rounds", 20))), relative=metric != "asr_mean")
+                if v is not None:
+                    ls.append((v, cens))
+            if ls:   # v0.3.9: also on UPR_trig (the covert backdoor's strict ASR is ~0, its under-forecast is not)
+                row[col] = float(np.median([v for v, _ in ls]))
+                row[col.replace("_l50", "_censored")] = sum(c for _, c in ls)
         dets = [j["res"].get("detection") or {} for j in js]
         for k in ("tpr_rounds", "fpr_rounds", "score_max_clean", "score_max_attack", "screen_cpu_s_mean",
                   "regroup_rounds", "regroup_tpr_groups", "regroup_fpr_groups", "regroup_kept_malicious_rate"):
@@ -211,7 +224,7 @@ def analyze(gdir: Path, split: str = "test", reference: dict[str, Any] | None = 
     out = gdir / "_analysis"
     (out / "figures").mkdir(parents=True, exist_ok=True)
     cols = varying + ["n_seeds"] + [c for m in METRICS for c in (m, f"{m}_lo", f"{m}_hi")] + \
-        ["lifespan_l50", "lifespan_censored", "tpr_rounds", "fpr_rounds", "tpr_units", "fpr_units", "auc_units",
+        ["lifespan_l50", "lifespan_censored", "lifespan_upr_l50", "lifespan_upr_censored", "tpr_rounds", "fpr_rounds", "tpr_units", "fpr_units", "auc_units",
          "auc_vs_clean", "fpr_clean", "n_units_pos", "n_units_neg", "regroup_rounds", "regroup_tpr_groups",
          "regroup_fpr_groups", "regroup_kept_malicious_rate", "score_max_clean", "score_max_attack", "malicious_kept_rate", "screen_cpu_s_mean", "server_defense_cpu_s_mean",
          "round_wall_s_mean", "client_train_cpu_s_mean", "update_bytes", "wall_s", "rule_replay_agree"] + \
@@ -316,7 +329,7 @@ def _fmt(r, m, digits=3):
 
 
 def _markdown(rows, varying, split):
-    shown = [m for m in ("mase_daily", "asr", "te", "ae", "upr_trig", "lifespan_l50", "tpr_units", "fpr_units",
+    shown = [m for m in ("mase_daily", "asr", "te", "ae", "upr_trig", "lifespan_l50", "lifespan_upr_l50", "tpr_units", "fpr_units",
                          "auc_units", "auc_vs_clean", "fpr_clean", "malicious_kept_rate", "server_defense_cpu_s_mean",
                          "round_wall_s_mean")
              if any(r.get(m) is not None for r in rows)]

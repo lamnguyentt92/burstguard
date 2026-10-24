@@ -54,7 +54,7 @@ case "$MODE" in
             if [ ! -f "$s" ] || ! grep -q '"status": "success"' "$s"; then RUNS+=("${d%/}"); fi; done ;;
   run)    RUNS+=("$RUNSEL") ;;
   grid)   [ -f runs/LATEST ] && RUNS+=("$(cat runs/LATEST)") ;;
-  campaign) while IFS= read -r d; do RUNS+=("${d%/}"); done < <(ls -1dt runs/*/ 2>/dev/null | head -n 3) ;;
+  campaign) while IFS= read -r d; do RUNS+=("${d%/}"); done < <(ls -1dt runs/*/ 2>/dev/null | head -n 10) ;;
 esac
 # grid directories to report: --grid a,b (prefix match) or --campaign (all grids of this version)
 GDIRS=()
@@ -139,6 +139,11 @@ PY
     echo "(no _analysis yet - run: burstguard analyze experiments/$(basename "$GD" | sed 's/_quick$//').toml$( [[ "$GD" == *_quick ]] && echo ' --quick'))"
   fi
 done
+if [ "$MODE" = "campaign" ]; then
+  [ -f "$SHARED/bg_thresholds.toml" ] && { sec "CALIBRATED THRESHOLDS $SHARED/bg_thresholds.toml"; cat "$SHARED/bg_thresholds.toml"; }
+  BGC="$(ls -1t logs/bg_check_v*.out 2>/dev/null | head -n1)"
+  [ -n "$BGC" ] && { sec "BG-CHECK $BGC"; clip "$BGC" 60; }
+fi
 if [ "$MODE" = "campaign" ] && [ -d "results/v$VER/_paper" ]; then
   sec "PAPER ARTEFACTS results/v$VER/_paper"
   cat "results/v$VER/_paper/index.md" 2>/dev/null

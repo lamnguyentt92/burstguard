@@ -196,6 +196,9 @@ def test_analysis_helpers():
     assert v == 4.0 and not cens
     v, cens = lifespan([2, 4, 6, 8], [0.9, 0.9, 0.9, 0.9], start=2, end=4, rounds=8)
     assert cens and v == 4.0
+    # UPR_trig: relative to the pre-attack level; no in-window excess = no backdoor (lifespan 0, not censored)
+    assert lifespan([0, 2, 4, 6, 8], [0.02, 0.02, 0.03, 0.02, 0.02], start=2, end=4, rounds=8, relative=True) == (0.0, False)
+    assert lifespan([0, 2, 4, 6, 8], [0.02, 0.7, 0.7, 0.3, 0.1], start=2, end=4, rounds=8, relative=True) == (2.0, False)
     assert holm([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
     mu, lo, hi = bootstrap_ci([[1.0, 1.0, 1.0], [1.0, 1.0]])
     assert mu == lo == hi == 1.0
@@ -302,6 +305,81 @@ def test_threshold_file(tmp_path):
         load_config(None, ov)
 
 
+def test_regroup_threshold_scale():
+    """Regroup units (means of ~n/G updates) are screened against sqrt(G)-scaled thresholds; accepted regroup scores
+    enter the adaptive history on the aggregate's scale."""
+    from burstguard.defenses.burstguard import BurstGuard
+    cfg = load_config(None, {"burstguard.regroup_threshold_scale": "sqrt", "burstguard.threshold": 0.05,
+                             "burstguard.threshold_anchor": 0.15, "burstguard.anchor_adaptive": False})
+    bg = object.__new__(BurstGuard)
+    bg.bg, bg.history, bg.history_anchor, bg.threads = cfg["burstguard"], [], [], 1
+    bg.last = bg.anchor = np.zeros(3, dtype=np.float32)
+    assert bg.regroup_scale(5) == pytest.approx(5 ** 0.5) and bg.regroup_scale(4) == pytest.approx(2.0)
+    vals = iter([0.08, 0.1, 0.30, 0.1])       # (S_last, S_anchor) of two units
+    bg.score = lambda cand, ref, seed=0: next(vals)
+    units = [np.zeros(3, dtype=np.float32)] * 2
+    flags, info = bg.screen(np.zeros(3, dtype=np.float32), units, rnd=1, scale=bg.regroup_scale(4))
+    assert flags == [False, True]            # 0.08 < 2 x 0.05; 0.30 > 0.10
+    assert info["threshold"] == pytest.approx(0.1) and info["threshold_scale"] == pytest.approx(2.0)
+    bg.score = lambda cand, ref, seed=0: 0.08
+    assert bg.screen(np.zeros(3, dtype=np.float32), units[:1], rnd=2)[0] == [True]   # aggregate: unscaled
+    with pytest.raises(ValueError, match="regroup_threshold_scale"):
+        load_config(None, {"burstguard.regroup_threshold_scale": 0.5})
+    assert load_config(None)["burstguard"]["regroup_threshold_scale"] == 1.0   # default = v0.3.5 behaviour
+
+
+def test_wait_for_calibrated_thresholds(tmp_path):
+    """X5 jobs wait until the threshold file has an entry for every data.path they use."""
+    from burstguard.experiments.grid import expand, missing_inputs, wait_inputs
+    f = tmp_path / "thr.toml"
+    g = {"grid": {"name": "t", "base_config": "configs/base.toml", "seeds": [0]},
+         "fixed": {"burstguard.threshold_file": str(f), "defense.name": "burstguard"},
+         "factors": {"data.path": ["shared:a.npz", "shared:b.npz"]}}
+    jobs = expand(g)
+    assert len(missing_inputs(g, jobs)) == 2
+    f.write_text('[thresholds."shared:a.npz"]\nthreshold = 1.0\nthreshold_anchor = 2.0\n')
+    miss = missing_inputs(g, jobs)
+    assert len(miss) == 1 and "shared:b.npz" in miss[0]
+    msgs = []
+    assert wait_inputs(g, jobs, log=msgs.append, timeout_h=0.0, poll_s=0.0) is False and msgs
+    f.write_text(f.read_text() + '[thresholds."shared:b.npz"]\nthreshold = 1.0\nthreshold_anchor = 2.0\n')
+    assert missing_inputs(g, jobs) == [] and wait_inputs(g, jobs, log=msgs.append, timeout_h=0.0) is True
+    assert missing_inputs(g, [{"overrides": {"data.path": "x"}}]) == []    # grids without a threshold file
+
+
+def test_calibrate_writes_fixed_anchor(tmp_path):
+    """calibrate --where matches config values that are not overrides; --write-thresholds stores the fixed anchor
+    rule (margin x largest clean anchor score of the whole run) by default."""
+    import argparse
+    import json as _json
+    import tomllib
+    from burstguard.cli import cmd_calibrate
+    gdir = tmp_path / "G"
+    for jid, amax in (("j1", 0.10), ("j2", 0.08)):
+        jd = gdir / jid
+        jd.mkdir(parents=True)
+        (jd / "config.toml").write_text('[data]\npath = "shared:x.npz"\n[burstguard]\nthreshold = 0.08\n'
+                                        'threshold_anchor = 0.3\nmad_k = 5.0\nhistory = 5\nanchor_adaptive = true\n')
+        (jd / "result.json").write_text(_json.dumps({"overrides": {"burstguard.width_max": 18}}))
+        rows = [{"kind": "round", "round": r, "attack_active": False,
+                 "burstguard": {"score_last": [0.02 + 0.001 * r], "score_anchor": [amax * r / 10]}} for r in range(1, 11)]
+        (jd / "metrics.jsonl").write_text("\n".join(_json.dumps(x) for x in rows) + "\n")
+
+    class Ctx:
+        def save_json(self, *a, **k): pass
+        def set(self, **k): pass
+    thr = tmp_path / "thr.toml"
+    a = argparse.Namespace(target=str(gdir), quick=False, margin=1.5, write_thresholds=str(thr), anchor="fixed",
+                           where=["data.path=shared:x.npz", "burstguard.width_max=18"])
+    cmd_calibrate(a, Ctx())
+    ent = tomllib.loads(thr.read_text())["thresholds"]["shared:x.npz"]
+    assert ent["anchor_adaptive"] is False and ent["threshold_anchor"] == pytest.approx(0.15)
+    assert ent["threshold"] == pytest.approx(round(1.5 * 0.03, 3)) and ent["clean_jobs"] == 2
+    a.where = ["data.path=shared:other.npz"]
+    with pytest.raises(RuntimeError, match="no BurstGuard scores"):
+        cmd_calibrate(a, Ctx())
+
+
 def test_rule_replay_from_monitor_run(tmp_path):
     """Monitor-mode runs: other decision rules are replayed on the logged scores (E9 without extra runs)."""
     from burstguard.engines.common import summarize
@@ -335,8 +413,19 @@ def test_generalization_grids():
     paths = {j["overrides"]["data.path"] for j in x1 + x2}
     assert paths == {"shared:data/processed/milan_sms_d1.npz", "shared:data/processed/milan_call_d1.npz"}
     assert not any(j["overrides"].get("train.peft") == "lora" and j["overrides"]["run.seed"] == 1 for j in x2)
-    x4 = expand(load_grid(ROOT / "experiments" / "X4_traffic_bg_monitor.toml"))
-    assert len(x4) == 18 and all(j["overrides"]["burstguard.rel_floor"] == 0.1 for j in x4)
+    x4 = expand(load_grid(ROOT / "experiments" / "X4_traffic_bg_monitor.toml"))   # v0.3.9: clean calibration only
+    assert len(x4) == 6 and all(j["overrides"]["burstguard.rel_floor"] == 0.1 for j in x4)
+    assert all(j["overrides"]["attack.type"] == "none" for j in x4)
+    x5 = expand(load_grid(ROOT / "experiments" / "X5_traffic_bg_enforce.toml"))
+    assert len(x5) == 18 and all(j["overrides"]["burstguard.regroup_threshold_scale"] == "sqrt" for j in x5)
+    seeds4 = {(j["overrides"]["data.path"], j["overrides"]["train.peft"], j["overrides"]["run.seed"]) for j in x4}
+    clean5 = [j["overrides"] for j in x5 if j["overrides"]["attack.type"] == "none"]
+    assert len(clean5) == 6 and not any((o["data.path"], o["train.peft"], o["run.seed"]) in seeds4 for o in clean5)
+    x6 = expand(load_grid(ROOT / "experiments" / "X6_offset_calibrated.toml"))
+    assert len(x6) == 16 and all(j["overrides"]["burstguard.width_max"] == 18 for j in x6)
+    assert all(j["overrides"]["burstguard.anchor_adaptive"] is False for j in x6)
+    assert {j["overrides"]["run.seed"] for j in x6 if j["overrides"]["attack.type"] == "none"} == {3, 4}
+    assert {j["overrides"]["run.seed"] for j in x6 if j["overrides"]["attack.type"] == "scale"} == {0, 1, 2}
     x3 = expand(load_grid(ROOT / "experiments" / "X3_trigger_offset.toml"))
     assert len(x3) == 34 and {j["overrides"]["burstguard.width_max"] for j in x3} == {6, 18}
     assert not any(j["overrides"]["attack.type"] == "none" and j["overrides"]["trigger.offset"] == 12 for j in x3)

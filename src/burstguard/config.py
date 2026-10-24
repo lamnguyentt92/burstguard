@@ -132,6 +132,9 @@ DEFAULTS: dict[str, Any] = {
         "on_flag": "regroup",    # flagged aggregate: regroup (re-aggregate in random secure groups, keep clean ones)
                                  # | reject (discard the whole round)
         "regroup_groups": 5,
+        "regroup_threshold_scale": 1.0,  # thresholds for the regroup units x this; "sqrt" = sqrt(regroup_groups): a
+                                 # group mean of n/G updates is ~sqrt(G) noisier than the full mean (E7: clean group
+                                 # scores 2.4-2.6x the aggregate's at G=5). 1.0 = v0.3.5 behaviour
     },
     "sim": {
         "num_cpus": 0,
@@ -241,6 +244,9 @@ def validate(cfg: dict[str, Any]) -> None:
         raise ValueError("defense lora_reset requires train.peft = lora")
     if cfg["burstguard"]["on_flag"] not in {"regroup", "reject"}:
         raise ValueError("burstguard.on_flag must be regroup|reject")
+    rs = cfg["burstguard"].get("regroup_threshold_scale", 1.0)
+    if not (rs == "sqrt" or (isinstance(rs, (int, float)) and not isinstance(rs, bool) and float(rs) >= 1.0)):
+        raise ValueError('burstguard.regroup_threshold_scale must be a number >= 1 or "sqrt"')
     if at["type"] not in ATTACKS:
         raise ValueError(f"attack.type must be one of {sorted(ATTACKS)}")
     n = int(cfg["data"]["num_sites"])

@@ -215,7 +215,7 @@ class ServerLogic:
             thetas = [results[i]["theta"] for i in g]
             mt = secure_mean(thetas, cfg, self.rng)[0] if sa["enabled"] else np.mean(thetas, axis=0)
             units.append(mt - theta); groups.append([results[i]["site"] for i in g])
-        flags, info = self.bg.screen(theta, units, rnd * 7919 + 1)
+        flags, info = self.bg.screen(theta, units, rnd * 7919 + 1, scale=self.bg.regroup_scale(len(grp)))
         keep = [i for i, f in enumerate(flags) if not f]
         mal = set(malicious)
         has = [any(s in mal for s in g) for g in groups]
@@ -298,8 +298,9 @@ class ServerLogic:
         if self.bg is not None and accepted:
             bi = rec.get("burstguard_regroup") or rec.get("burstguard", {})
             fl = bi.get("would_flag", [])  # monitor mode: thresholds evolve as if enforcing
-            self.bg.accept(new_theta, [s for s, f in zip(bi.get("score_last", []), fl) if not f],
-                           [s for s, f in zip(bi.get("score_anchor", []), fl) if not f])
+            sc = float(bi.get("threshold_scale", 1.0) or 1.0)  # regroup units: back to the aggregate's scale
+            self.bg.accept(new_theta, [s / sc for s, f in zip(bi.get("score_last", []), fl) if not f and s is not None],
+                           [s / sc for s, f in zip(bi.get("score_anchor", []), fl) if not f and s is not None])
         if self.lora_reset is not None:
             new_theta, linfo = self.lora_reset.apply(new_theta, rnd)
             rec["lora_reset"] = linfo

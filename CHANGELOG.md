@@ -3,7 +3,48 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
-## [0.3.8] — 2026-10-24
+## [0.3.9] — 2026-10-24
+
+Replaces v0.3.8 (never run): completes the paper's data with 40 jobs (~4 h on 5 VMs). Defaults unchanged
+(`regroup_threshold_scale = 1`, `rel_floor = 0`), `EXPERIMENT_CODE` stays "0.3.5" (all results since 0.3.5 merge).
+
+Analysis of v0.3.7 (X3, 34/34 jobs): width_max = 18 restores detection at trigger offset 12 for model replacement
+(TPR 1.00, UPR 0.03) and LoRA / covert (TPR 0.90, UPR 0.05), FPR 0. Remaining gap: head, covert (boost 3), offset 12
+(TPR 0.05, UPR 0.47) - a threshold problem, not a search problem: clean per-round scores <= 0.033 vs 0.06-0.10 under
+attack (the 0.08 floor was set for W = 6), and the adaptive anchor threshold (median + 5 MAD) follows the attacker's
+slow ramp (anchor score 0.10 -> 0.66 over 20 rounds without a flag).
+
+### Fixed (v0.3.8 design, found by replaying X3 / E7 scores)
+- Calibrated thresholds (1.5 x the largest clean score of the full aggregate) would reject clean groups during a
+  regroup: group means of ~n/G updates score 2.4-2.6x higher (E7, G = 5). New `burstguard.regroup_threshold_scale`
+  (number >= 1 or "sqrt" = sqrt(G)) scales the thresholds of regroup units; accepted regroup scores enter the
+  adaptive history divided by the scale (aggregate scale). Default 1.0 = previous behaviour.
+- `calibrate --write-thresholds` wrote the adaptive anchor rule with a floor from the first `history` rounds: replayed
+  on X3 (W = 6) it gives 14 false positives as LoRA drift grows, and it follows slow ramps. New `--anchor
+  fixed|adaptive`, default fixed (margin x largest clean anchor score of the whole run; in-sample replay: 0 FP).
+- False-positive rates of calibrated deployments were measured on the calibration seeds (0 by construction): X5 and
+  X6 clean runs now use held-out seeds.
+- `calibrate --where KEY=VALUE` also matches values from the job's config.toml (keys the grid does not vary).
+- `bg-check` samples internet models only.
+
+### Added
+- `X6_offset_calibrated` (16 jobs, tier `offset2`): internet, width_max 18 with thresholds recalibrated on the clean
+  W = 18 runs of X3 (0.05 / 0.153, fixed anchor), regroup thresholds x sqrt(G); offset 0 / 12 x boost n/m / 3 (head,
+  seeds 0-2), LoRA covert offset 12 (seed 0), clean on held-out seeds (head 3, 4; LoRA 3). Paper: `W=18 cal.` rows
+  in `tables/offset.tex`.
+- `burstguard grid run` waits (log line every 5 min, `BURSTGUARD_WAIT_POLL_S`, `BURSTGUARD_WAIT_INPUTS_H`,
+  `--no-wait`) until the calibrated thresholds its jobs need exist, so X5 can be queued behind X4 / X6.
+- `cluster.sh finish` (use `--bg`): waits for X4 on all machines, calibrates SMS and call, writes and pushes
+  `bg_thresholds.toml` (X5 then starts by itself), waits for every grid, runs `analyze all`, `bg-check`, `paper` and
+  the campaign report. `collect_logs.sh --campaign` includes the thresholds, bg-check and the last 10 runs.
+- Analysis: `lifespan_upr_l50` (backdoor lifespan on UPR_trig); `figures/lifespan` gets a UPR_trig row.
+
+### Changed
+- `X4_traffic_bg_monitor`: clean calibration runs only (6 jobs; attacked runs are measured in X5, enforce mode).
+- `X5_traffic_bg_enforce`: fixed anchor rule from the threshold file, `regroup_threshold_scale = "sqrt"`, clean runs
+  on held-out seeds (head 2, 3; LoRA 2).
+
+## [0.3.8] — 2026-10-24 (superseded by 0.3.9, never run)
 
 Fix for BurstGuard on other traffic types; defaults unchanged (`rel_floor = 0`), `EXPERIMENT_CODE` stays "0.3.5".
 
