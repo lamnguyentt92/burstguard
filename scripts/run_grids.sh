@@ -45,6 +45,8 @@ tier_grids() {
     system) echo "E8_system" ;;
     generalization) echo "X1_traffic_clean X2_traffic_defenses" ;;
     offset) echo "X3_trigger_offset" ;;
+    traffic_bg) echo "X4_traffic_bg_monitor" ;;
+    traffic_bg2) echo "X5_traffic_bg_enforce" ;;
     *) echo "" ;;
   esac
 }

@@ -1,0 +1,29 @@
+# X5 - BurstGuard on SMS and call traffic, phase 2: enforce mode (regroup) with the relative-change floor and the
+# thresholds calibrated per dataset on the clean rounds of X4 (burstguard calibrate ... --write-thresholds
+# shared:bg_thresholds.toml). Replaces the BurstGuard rows of X2 (internet thresholds, FPR 1.0) in the
+# generalisation table. Head: 2 seeds; LoRA: seed 0. Jobs fail with a clear message if the threshold file is missing.
+[grid]
+name = "X5_traffic_bg_enforce"
+base_config = "configs/base.toml"
+seeds = [0, 1]
+
+[fixed]
+"defense.name" = "burstguard"
+"burstguard.rel_floor" = 0.1
+"burstguard.threshold_file" = "shared:bg_thresholds.toml"
+
+[factors]
+"data.path" = ["shared:data/processed/milan_sms_d1.npz", "shared:data/processed/milan_call_d1.npz"]
+"train.peft" = ["head", "lora"]
+"attack.type" = ["none", "scale"]
+"attack.boost" = [0.0, 3.0]          # 0 = n/m (model replacement), 3 = covert
+
+[[exclude]]
+"attack.type" = "none"
+"attack.boost" = 3.0
+[[exclude]]                 # LoRA: seed 0
+"train.peft" = "lora"
+"run.seed" = 1
+
+[analysis]
+split = "test"

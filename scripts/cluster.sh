@@ -173,7 +173,7 @@ check)
 # -----------------------------------------------------------------------------------------------------------
 push-data)
   shopt -s nullglob
-  NPZS=("$SHARED"/data/processed/milan*_d*.npz); HF="$SHARED/hf"
+  NPZS=("$SHARED"/data/processed/milan*_d*.npz); HF="$SHARED/hf"; THR="$SHARED/bg_thresholds.toml"
   shopt -u nullglob
   [ ${#NPZS[@]} -gt 0 ] || { say "missing $SHARED/data/processed/milan_d1.npz - run burstguard data download && burstguard data prepare here first"; exit 2; }
   [ -d "$HF/hub" ] || say "WARNING: no model cache in $HF (run burstguard model-download here first)"
@@ -193,7 +193,8 @@ push-data)
       done
       scp -q -r "${SSH_OPTS[@]}" "$HF/." "$h:burstguard-shared/hf/" || rc=1
     fi
-    rsh "$h" 'ls -l ~/burstguard-shared/data/processed/milan*.npz | awk "{print \"    \" \$5 \" bytes \" \$9}"'
+    if [ -f "$THR" ]; then scp -q "${SSH_OPTS[@]}" "$THR" "$h:burstguard-shared/bg_thresholds.toml" || rc=1; fi
+    rsh "$h" 'ls -l ~/burstguard-shared/data/processed/milan*.npz ~/burstguard-shared/bg_thresholds.toml 2>/dev/null | awk "{print \"    \" \$5 \" bytes \" \$9}"'
   done
   exit $rc ;;
 # -----------------------------------------------------------------------------------------------------------

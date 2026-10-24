@@ -3,6 +3,28 @@
 Versioning follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`. Every version has a
 `release/vX.Y.Z` branch on GitHub and a Vietnamese guide `docs/README_vX.Y.Z.md`. Fixes made after a log report bump PATCH.
 
+## [0.3.8] — 2026-10-24
+
+Fix for BurstGuard on other traffic types; defaults unchanged (`rel_floor = 0`), `EXPERIMENT_CODE` stays "0.3.5".
+
+X2 (v0.3.6) showed that with the internet thresholds BurstGuard flags every round on SMS and call traffic (FPR 1.0;
+the model stays at the pre-trained weights, MASE = zero-shot): the relative forecast change divides by |f(x)|, and
+night-time SMS / call forecasts are close to zero, so clean scores reach 1-160 (internet: <= 0.05).
+
+### Added
+- `burstguard.rel_floor` (rho): the score divides by max(|f(x)|, rho * sigma) + eps instead of |f(x)| + eps
+  (sigma = scale of the probe series). Default 0 = previous score, bit-identical.
+- `burstguard bg-check [--results DIR] [--rho 0.1]`: per traffic type, how often the floor binds on the probe windows
+  of the pre-trained model, and for saved final models of a finished campaign (internet) the anchor score with and
+  without the floor (identical when the floor never binds).
+- `burstguard calibrate --where KEY=VALUE` (only matching jobs) and `--write-thresholds FILE` (stores the suggested
+  thresholds per data.path); `burstguard.threshold_file` applies them when a job's configuration is resolved
+  (recorded as `burstguard.threshold_source` in the job's config.toml; a missing file or entry fails the job).
+- `cluster.sh push-data` also copies `$BURSTGUARD_SHARED/bg_thresholds.toml`.
+- Grids `X4_traffic_bg_monitor` (18 jobs, tier `traffic_bg`: monitor mode with rel_floor 0.1 - calibration and
+  detection at any threshold) and `X5_traffic_bg_enforce` (18 jobs, tier `traffic_bg2`: enforce mode with the
+  calibrated thresholds). The paper's generalization table takes BurstGuard's SMS / call rows from X5.
+
 ## [0.3.7] — 2026-10-24
 
 Adds one grid after the complete main campaign (v0.3.5: 422 jobs, 0 failed); experiment code unchanged

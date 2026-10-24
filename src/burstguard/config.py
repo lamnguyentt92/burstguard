@@ -125,6 +125,8 @@ DEFAULTS: dict[str, Any] = {
         "mad_k": 5.0,
         "history": 5,            # rounds of accepted scores used by the adaptive thresholds
         "both_directions": True,
+        "threshold_file": "",    # calibrated thresholds per data.path (burstguard calibrate --write-thresholds)
+        "rel_floor": 0.0,        # denominator floor rho: relative change / max(|f(x)|, rho * sigma); 0 = off (v0.3.5)
         "threads": 1,            # torch threads while screening; 0 = min(4, CPUs - 1). P0 v0.3.2: 3-4 threads gave no
                                  # speed-up on the 32-64-window batches (same wall time, 3-5x the CPU seconds)
         "on_flag": "regroup",    # flagged aggregate: regroup (re-aggregate in random secure groups, keep clean ones)
@@ -197,6 +199,21 @@ def normalize(cfg: dict[str, Any]) -> None:
     else:
         d["aggregator"] = d["name"]
     bg = cfg["burstguard"]
+    tf = str(bg.get("threshold_file", "") or "")
+    if tf and not bg.get("threshold_source"):   # resolved once; the job's config.toml keeps the values
+        import tomllib
+        p = resolve(tf)
+        key = str(cfg["data"]["path"])
+        if not p.exists():
+            raise FileNotFoundError(f"burstguard.threshold_file {p} not found - run `burstguard calibrate <monitor grid> "
+                                    f"--where data.path={key} --write-thresholds {tf}` and `cluster.sh push-data` first")
+        with open(p, "rb") as f:
+            ent = tomllib.load(f).get("thresholds", {}).get(key)
+        if not ent:
+            raise ValueError(f"no calibrated thresholds for data.path={key} in {p}")
+        bg["threshold"], bg["threshold_anchor"] = float(ent["threshold"]), float(ent["threshold_anchor"])
+        bg["anchor_adaptive"] = bool(ent.get("anchor_adaptive", bg.get("anchor_adaptive", True)))
+        bg["threshold_source"] = f"{p}#{key}"
     if bg["screen"] == "auto":
         bg["screen_resolved"] = "units" if (cfg["secagg"]["enabled"] and cfg["secagg"]["groups"] > 1) else "aggregate"
     else:

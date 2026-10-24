@@ -259,6 +259,49 @@ def test_burstguard_batched_search_matches_sequential():
     assert bg.score(cand, th, seed=5) == pytest.approx(sequential(5), abs=1e-6)
 
 
+def test_burstguard_rel_floor():
+    """rel_floor = 0 is the plain relative change; with near-zero forecasts the floor keeps the score bounded."""
+    from burstguard.config import load_config
+    from burstguard import model as M
+    from burstguard.defenses.burstguard import BurstGuard
+    rng = np.random.default_rng(1)
+    for floor in (0.0, 0.5):
+        cfg = load_config(None, ['model.source="random"', "burstguard.steps=2", "burstguard.probe_windows=8",
+                                 f"burstguard.rel_floor={floor}"])
+        m = M.configure_peft(M.load_model(cfg)[0], cfg)
+        th = M.get_vec(m)
+        X = np.abs(rng.standard_normal((8, int(cfg["data"]["context"]), 1)) * 0.01).astype(np.float32)  # ~0 level
+        bg = BurstGuard(cfg, m, X, np.ones(8, np.float32), th)
+        cand = th + rng.standard_normal(th.size).astype(np.float32) * 0.05
+        s = bg.score(cand, th, seed=3)
+        assert np.isfinite(s)
+        if floor == 0.0:
+            s0 = s
+        else:
+            assert abs(s) < abs(s0)          # the floor damps the blow-up of near-zero forecasts
+
+
+def test_threshold_file(tmp_path):
+    """burstguard.threshold_file: thresholds calibrated per data.path are applied when the config is resolved."""
+    from burstguard.config import dump_toml, load_config
+    f = tmp_path / "thr.toml"
+    f.write_text('[thresholds."shared:data/processed/milan_sms_d1.npz"]\nthreshold = 1.25\nthreshold_anchor = 2.5\n'
+                 'anchor_adaptive = true\n')
+    ov = {"data.path": "shared:data/processed/milan_sms_d1.npz", "burstguard.threshold_file": str(f)}
+    cfg = load_config(None, ov)
+    assert cfg["burstguard"]["threshold"] == 1.25 and cfg["burstguard"]["threshold_anchor"] == 2.5
+    assert cfg["burstguard"]["threshold_source"].endswith("milan_sms_d1.npz")
+    (tmp_path / "job.toml").write_text(dump_toml(cfg))          # a job's saved config keeps the resolved values
+    f.unlink()
+    again = load_config(str(tmp_path / "job.toml"))
+    assert again["burstguard"]["threshold"] == 1.25
+    with pytest.raises(FileNotFoundError):
+        load_config(None, ov)
+    f.write_text('[thresholds."other"]\nthreshold = 1.0\nthreshold_anchor = 1.0\n')
+    with pytest.raises(ValueError, match="no calibrated thresholds"):
+        load_config(None, ov)
+
+
 def test_rule_replay_from_monitor_run(tmp_path):
     """Monitor-mode runs: other decision rules are replayed on the logged scores (E9 without extra runs)."""
     from burstguard.engines.common import summarize
@@ -292,6 +335,8 @@ def test_generalization_grids():
     paths = {j["overrides"]["data.path"] for j in x1 + x2}
     assert paths == {"shared:data/processed/milan_sms_d1.npz", "shared:data/processed/milan_call_d1.npz"}
     assert not any(j["overrides"].get("train.peft") == "lora" and j["overrides"]["run.seed"] == 1 for j in x2)
+    x4 = expand(load_grid(ROOT / "experiments" / "X4_traffic_bg_monitor.toml"))
+    assert len(x4) == 18 and all(j["overrides"]["burstguard.rel_floor"] == 0.1 for j in x4)
     x3 = expand(load_grid(ROOT / "experiments" / "X3_trigger_offset.toml"))
     assert len(x3) == 34 and {j["overrides"]["burstguard.width_max"] for j in x3} == {6, 18}
     assert not any(j["overrides"]["attack.type"] == "none" and j["overrides"]["trigger.offset"] == 12 for j in x3)

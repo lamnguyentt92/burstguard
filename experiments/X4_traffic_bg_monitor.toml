@@ -1,0 +1,33 @@
+# X4 - BurstGuard on SMS and call traffic, phase 1 (calibration + detection), monitor mode.
+# X2 showed that with the internet thresholds (0.08 / 0.3) and the plain relative-change score BurstGuard flags every
+# round on SMS / call (FPR 1.0, the model never leaves the pre-trained weights): near-zero night-time forecasts make
+# the relative change explode (clean scores 1-160 vs <= 0.05 on internet). Fix: relative-change floor
+# (burstguard.rel_floor = 0.1: divide by max(|f|, 0.1 sigma)) and per-deployment calibration of the thresholds on
+# clean rounds, as E0 did for internet traffic. Monitor mode records the scores of every round without filtering,
+# so clean runs give the thresholds (burstguard calibrate --where data.path=...) and attacked runs the detection
+# rate at any threshold. Phase 2 (enforce with the calibrated thresholds) follows from these numbers.
+[grid]
+name = "X4_traffic_bg_monitor"
+base_config = "configs/base.toml"
+seeds = [0, 1]
+
+[fixed]
+"defense.name" = "burstguard"
+"burstguard.mode" = "monitor"
+"burstguard.rel_floor" = 0.1
+
+[factors]
+"data.path" = ["shared:data/processed/milan_sms_d1.npz", "shared:data/processed/milan_call_d1.npz"]
+"train.peft" = ["head", "lora"]
+"attack.type" = ["none", "scale"]
+"attack.boost" = [0.0, 3.0]          # 0 = n/m (model replacement), 3 = covert
+
+[[exclude]]
+"attack.type" = "none"
+"attack.boost" = 3.0
+[[exclude]]                 # LoRA: seed 0
+"train.peft" = "lora"
+"run.seed" = 1
+
+[analysis]
+split = "test"

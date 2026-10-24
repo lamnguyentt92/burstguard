@@ -3,9 +3,11 @@
 For a candidate global model c and a reference r (pre-trained anchor or last accepted global), the score is
 
     S(c, r) = max_{dir in {down, up}} max_{delta in B} mean_x [ D_dir(c, x, delta) - D_dir(r, x, delta) ]
-    D_down(m, x, delta) = mean_h (f_m(x) - f_m(x + delta)) / (|f_m(x)| + eps)        (D_up = -D_down)
+    D_down(m, x, delta) = mean_h (f_m(x) - f_m(x + delta)) / (max(|f_m(x)|, rho * sigma_x) + eps)   (D_up = -D_down)
     B = { delta >= 0, supported on the last W slots, delta <= amplitude_max * sigma_x }
 
+(rho = burstguard.rel_floor, default 0 = plain relative change; a floor keeps the relative change finite where the
+forecast is close to zero, e.g. night-time SMS / call counts; sigma_x = scale of the probe series)
 computed with projected sign-gradient ascent (K steps, R random restarts) on public probe windows. Only the
 aggregate (or group aggregates) is needed, so the screen is compatible with secure aggregation.
 
@@ -79,12 +81,17 @@ class BurstGuard:
         XX, SS, BC, BR = rep(X), rep(sig), rep(bc), rep(br)
         sgn = torch.tensor(chains, dtype=bc.dtype).repeat_interleave(N).view((-1,) + (1,) * (bc.dim() - 1))
         g = torch.cat([torch.rand(N, W, 1, generator=g0) for _ in chains]).requires_grad_(True)
+        rho = float(bg.get("rel_floor", 0.0) or 0.0)
+        if rho > 0:      # denominators max(|f(x)|, rho * sigma) + eps
+            DC, DR = torch.maximum(BC.abs(), rho * SS) + 1e-3, torch.maximum(BR.abs(), rho * SS) + 1e-3
+        else:            # plain relative change (default; identical to v0.3.5)
+            DC, DR = BC.abs() + 1e-3, BR.abs() + 1e-3
 
         def chain_scores(gv):
             d = torch.zeros_like(XX)
             d[:, L - W:, :] = gv * amax * SS
-            dc = sgn * (BC - M.forward(self.cand, XX + d, self.freq)) / (BC.abs() + 1e-3)
-            dr = sgn * (BR - M.forward(self.ref, XX + d, self.freq)) / (BR.abs() + 1e-3)
+            dc = sgn * (BC - M.forward(self.cand, XX + d, self.freq)) / DC
+            dr = sgn * (BR - M.forward(self.ref, XX + d, self.freq)) / DR
             return (dc - dr).reshape(C, -1).mean(dim=1)      # one score per chain
 
         for _ in range(K):

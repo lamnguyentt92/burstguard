@@ -361,6 +361,7 @@ def table_generalization(root: Path, tdir: Path, numbers: dict) -> str | None:
     if not x1 and not x2:
         return None
     e1, e3 = _load(root, "E1_clean"), _load(root, "E3_defenses")
+    x5 = _load(root, "X5_traffic_bg_enforce")   # BurstGuard with rel_floor + calibrated thresholds (SMS, calls)
     body = []
     numbers["generalization"] = {}
     for tname, path in TRAFFIC:
@@ -374,9 +375,10 @@ def table_generalization(root: Path, tdir: Path, numbers: dict) -> str | None:
             f10 = pick_att(def_rows, "scale", defense__name="fedavg", train__peft=peft, **kw)
             f3 = pick_att(def_rows, "scale@3", defense__name="fedavg", train__peft=peft, **kw)
             p3 = pick_att(def_rows, "scale@3", defense__name="probe_screen", train__peft=peft, **kw)
-            b10 = pick_att(def_rows, "scale", defense__name="burstguard", train__peft=peft, **kw)
-            b3 = pick_att(def_rows, "scale@3", defense__name="burstguard", train__peft=peft, **kw)
-            b0 = pick_att(def_rows, "none", defense__name="burstguard", train__peft=peft, **kw)
+            bg_rows = x5[0] if (path is not None and x5) else def_rows
+            b10 = pick_att(bg_rows, "scale", defense__name="burstguard", train__peft=peft, **kw)
+            b3 = pick_att(bg_rows, "scale@3", defense__name="burstguard", train__peft=peft, **kw)
+            b0 = pick_att(bg_rows, "none", defense__name="burstguard", train__peft=peft, **kw)
             if not any((fl, f10, f3, b3)):
                 continue
             d3 = None
@@ -403,7 +405,8 @@ def table_generalization(root: Path, tdir: Path, numbers: dict) -> str | None:
            "Clean test MASE of TTM zero-shot and federated fine-tuning; UPR$_{trig}$ under model replacement "
            "($\\gamma$=10) / the covert attacker ($\\gamma$=3) with FedAvg, the covert attacker's damage to clean MASE, "
            "UPR$_{trig}$ with the probe-loss check ($\\gamma$=3) and with BurstGuard ($\\gamma$=10 / $\\gamma$=3), "
-           "BurstGuard's MASE under attack and its false-positive rate on clean rounds.")
+           "BurstGuard's MASE under attack and its false-positive rate on clean rounds. For SMS and calls BurstGuard "
+           "uses the relative-change floor and thresholds calibrated on clean rounds of that traffic type (X4/X5).")
     hdr = ["Traffic", "Tuned", "Zero-shot", "FL", "FedAvg UPR", "$\\Delta$MASE\\% ($\\gamma$=3)", "Probe UPR",
            "BurstGuard UPR", "BG MASE", "FPR"]
     (tdir / "generalization.tex").write_text(_tabular("llrrcrrcrr", hdr, body, cap, "tab:generalization"))

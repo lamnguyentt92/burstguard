@@ -352,7 +352,7 @@ def cmd_paper(a, ctx):
 def cmd_plan(a, ctx):
     from pathlib import Path as _P
     from burstguard.experiments import plan as PL
-    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system", "generalization", "offset"])
+    names = a.grids or [n for t in (a.tier.split(",") if a.tier else ["calibration", "1", "2", "system", "generalization", "offset", "traffic_bg", "traffic_bg2"])
                         for n in PL.TIERS.get(t, [])]
     files = [resolve(n) if n.endswith(".toml") else ROOT / "experiments" / f"{n}.toml" for n in names]
     files = [f for f in files if _P(f).exists()]
@@ -374,7 +374,16 @@ def cmd_calibrate(a, ctx):
     acc: dict[str, list[float]] = {"score_last": [], "score_anchor": []}
     jobs = []
     by_round: dict[int, list[float]] = {}
+    where = {}
+    for it in (a.where or []):
+        k, _, v = it.partition("=")
+        where[k.strip()] = v.strip().strip("\"'")
     for m in sorted(gdir.glob("*/metrics.jsonl")):
+        if where:   # only jobs whose overrides match every --where KEY=VALUE
+            rj = m.parent / "result.json"
+            ov = json.loads(rj.read_text()).get("overrides", {}) if rj.exists() else {}
+            if any(str(ov.get(k)) != v for k, v in where.items()):
+                continue
         series = []
         for line in m.read_text().splitlines():
             r = json.loads(line)
@@ -423,9 +432,43 @@ def cmd_calibrate(a, ctx):
         rep[name] = {"threshold": t, "threshold_anchor": ta, "anchor_adaptive": ad, "replayed_fpr_units": replay(t, ta, ad)}
     res = {"jobs": len(jobs), "clean_unit_scores": out, "anchor_score_median_by_round": drift, "candidates": rep,
            "note": "set burstguard.threshold / threshold_anchor / anchor_adaptive in configs/base.toml on ALL VMs"}
+    if a.write_thresholds:
+        key = where.get("data.path")
+        if not key:
+            raise ValueError("--write-thresholds needs --where data.path=... (thresholds are stored per dataset)")
+        best = rep.get(f"suggested, adaptive anchor ({mg}x clean max)")
+        if not best:
+            raise RuntimeError("no suggested thresholds (no clean rounds?)")
+        import tomllib
+        tf = resolve(a.write_thresholds)
+        tab = tomllib.loads(tf.read_text()).get("thresholds", {}) if tf.exists() else {}
+        tab[key] = {"threshold": best["threshold"], "threshold_anchor": best["threshold_anchor"],
+                    "anchor_adaptive": True, "replayed_fpr_units": best["replayed_fpr_units"],
+                    "margin": mg, "clean_jobs": len(jobs), "calibrated_from": gdir.name,
+                    "written": __import__("datetime").datetime.now().isoformat(timespec="seconds")}
+        lines = ["# BurstGuard thresholds calibrated on clean monitor-mode rounds, one entry per dataset",
+                 "# (burstguard calibrate <grid> --where data.path=... --write-thresholds <this file>)", ""]
+        for k, v in sorted(tab.items()):
+            lines.append(f"[thresholds.{json.dumps(k)}]")
+            for kk, vv in v.items():
+                lines.append(f"{kk} = {json.dumps(vv) if not isinstance(vv, bool) else str(vv).lower()}")
+            lines.append("")
+        tf.parent.mkdir(parents=True, exist_ok=True)
+        tf.write_text("\n".join(lines))
+        res["written"] = {"file": str(tf), "data.path": key, **tab[key]}
+        print(f"thresholds for {key}: threshold={best['threshold']} threshold_anchor={best['threshold_anchor']} "
+              f"(replayed FPR {best['replayed_fpr_units']}) -> {tf}")
     print(json.dumps(res, indent=2))
     ctx.save_json("calibration.json", res)
     ctx.set(jobs=len(jobs), suggested_threshold=sug(max_last), suggested_threshold_anchor=sug(max_early))
+
+
+def cmd_bg_check(a, ctx):
+    """How often BurstGuard's relative-change floor binds, and whether it changes scores of finished internet runs."""
+    from burstguard.experiments import bgcheck
+    res = bgcheck.check(results=a.results or None, rho=a.rho, max_models=a.max_models)
+    ctx.save_json("bg_check.json", res)
+    ctx.set(traffic=list(res["traffic"]), models=len(res["models"]), max_abs_diff=res.get("max_abs_diff"))
 
 
 def cmd_smoke(a, ctx):
@@ -575,7 +618,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_paper)
     s = sub.add_parser("plan", help="estimate remaining campaign time from finished jobs")
     s.add_argument("grids", nargs="*", help="grid names or files (default: all tiers)")
-    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system,generalization,offset")
+    s.add_argument("--tier", default="", help="comma list of tiers: pilot,calibration,1,2,system,generalization,offset,traffic_bg,traffic_bg2")
     s.add_argument("--shards", type=int, default=5)
     s.add_argument("--weights", default="", help="w1,...,wN shard weights (default: $BURSTGUARD_SHARED/cluster.weights "
                                                   "if it exists, else equal shards)")
@@ -583,7 +626,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("calibrate", help="BurstGuard threshold from monitor-mode clean runs")
     s.add_argument("target"); s.add_argument("--quick", action="store_true")
     s.add_argument("--margin", type=float, default=1.5, help="suggested threshold = margin x largest clean score")
+    s.add_argument("--where", action="append", help="only jobs with this override, e.g. "
+                   "--where data.path=shared:data/processed/milan_sms_d1.npz (repeatable)")
+    s.add_argument("--write-thresholds", default="", help="store the suggested thresholds for --where data.path in "
+                   "this TOML file (e.g. shared:bg_thresholds.toml; used by burstguard.threshold_file)")
     s.set_defaults(fn=cmd_calibrate)
+
+    s = sub.add_parser("bg-check", help="diagnose BurstGuard's relative-change floor (traffic types, saved models)")
+    s.add_argument("--results", default="", help="results dir with saved final models, e.g. ~/burstguard-v0.3.5/results/v0.3.5")
+    s.add_argument("--rho", type=float, default=0.1); s.add_argument("--max-models", type=int, default=12)
+    s.set_defaults(fn=cmd_bg_check, name="bg-check")
 
     s = sub.add_parser("smoke", help="end-to-end test without network / real data")
     s.add_argument("--workers", type=int, default=2); s.set_defaults(fn=cmd_smoke)

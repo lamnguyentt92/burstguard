@@ -47,6 +47,8 @@ TIERS = {
     "system": ["E8_system"],
     "generalization": ["X1_traffic_clean", "X2_traffic_defenses"],
     "offset": ["X3_trigger_offset"],
+    "traffic_bg": ["X4_traffic_bg_monitor"],
+    "traffic_bg2": ["X5_traffic_bg_enforce"],
 }
 
 
